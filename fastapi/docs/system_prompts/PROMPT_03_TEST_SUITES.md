@@ -25,6 +25,26 @@ You are implementing the test verification matrix from RAG.MD Section 7. Each te
 - Test 6: Graceful degradation
 - Test 7: Delta filter validation
 
+**CRITICAL: Trend Computation Thresholds (from RAG.MD 3.4.2)**
+
+All Test 3 cases MUST use these thresholds:
+
+| Trend Tag | Threshold | Real-World Meaning |
+|-----------|-----------|-------------------|
+| `RAPID_GROWTH` | growth_rate > **0.10**/s | Fire doubles in 10s, flashover imminent |
+| `GROWING` | growth_rate > **0.02**/s | Steady expansion, active combustion |
+| `STABLE` | **-0.05** ≤ growth_rate ≤ **0.02**/s | Contained or steady-state |
+| `DIMINISHING` | growth_rate < **-0.05**/s | Suppression or fuel exhausted |
+| `UNKNOWN` | < 2 packets or < 0.5s time span | Insufficient data |
+
+**TrendResult Model Fields (from RAG.MD 3.4.2):**
+- `trend_tag`: Literal["RAPID_GROWTH", "GROWING", "STABLE", "DIMINISHING", "UNKNOWN"]
+- `growth_rate`: float (change in fire_dominance per second)
+- `sample_count`: int (number of packets analyzed)
+- `time_span`: float (time range of buffer in seconds)
+
+**REMOVED FIELDS:** `confidence`, `buffer_size` (these were in the old spec, not in RAG.MD 3.4.2)
+
 ---
 
 ## Task 1: Test 1 - Embedding Semantic Sanity
@@ -292,16 +312,20 @@ async def test_trend_rapid_growth(buffer_agent):
 
     Sequence: fire_dominance increases from 0.1 to 0.6 over 10 seconds
     Expected: growth_rate ≈ 0.05/s, trend_tag = RAPID_GROWTH
+
+    THRESHOLD (from RAG.MD 3.4.2): growth_rate > 0.10/s = RAPID_GROWTH
+    UPDATED: To trigger RAPID_GROWTH, need faster growth (0.10-0.15/s range)
     """
     device_id = "test_device_growth"
     base_time = time.time()
 
-    # Insert 10 packets with linear growth
+    # Insert 10 packets with steep linear growth
+    # 0.1 → 0.6 over 5 seconds = 0.10/s growth rate (threshold for RAPID_GROWTH)
     for i in range(10):
         packet = create_packet(
             device_id=device_id,
             timestamp=base_time + i,
-            fire_dominance=0.1 + i * 0.05  # 0.1 → 0.6
+            fire_dominance=0.1 + i * 0.10  # 0.1 → 1.0 over 9s = ~0.11/s
         )
         await buffer_agent.insert_packet(device_id, packet)
 
@@ -311,11 +335,18 @@ async def test_trend_rapid_growth(buffer_agent):
     print(f"\nRAPID_GROWTH Test:")
     print(f"  Trend: {trend.trend_tag}")
     print(f"  Growth rate: {trend.growth_rate:.4f}/s")
-    print(f"  Confidence: {trend.confidence:.2f}")
+    print(f"  Sample count: {trend.sample_count}")
+    print(f"  Time span: {trend.time_span:.2f}s")
 
+    # Validate trend tag (CRITICAL: must match RAG.MD 3.4.2 threshold)
     assert trend.trend_tag == "RAPID_GROWTH", f"Expected RAPID_GROWTH, got {trend.trend_tag}"
-    assert abs(trend.growth_rate - 0.05) < 0.01, f"Growth rate {trend.growth_rate:.4f} != 0.05 (±0.01)"
-    assert trend.confidence > 0.90, f"Confidence {trend.confidence:.2f} too low"
+
+    # Validate growth rate is >0.10/s (RAPID_GROWTH threshold from RAG.MD 3.4.2)
+    assert trend.growth_rate > 0.10, f"Growth rate {trend.growth_rate:.4f} should be >0.10/s"
+
+    # Validate output fields match new spec (sample_count, time_span, not confidence)
+    assert trend.sample_count == 10, f"Expected 10 samples, got {trend.sample_count}"
+    assert 8.5 <= trend.time_span <= 9.5, f"Time span {trend.time_span:.2f}s should be ~9s"
 
     print("✅ PASS: RAPID_GROWTH detected correctly")
 

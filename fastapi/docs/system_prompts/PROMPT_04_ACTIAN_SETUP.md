@@ -141,12 +141,217 @@ CREATE INDEX idx_incident_hazard ON incident_log (hazard_level);
 -- Function to compute cosine similarity (for debugging)
 CREATE OR REPLACE FUNCTION cosine_similarity(a vector, b vector)
 RETURNS DOUBLE PRECISION AS $$
-    SELECT 1 - (a <=> b);
+    SELECT 1 - (a <-> b);  -- IMPORTANT: Use <-> for L2 distance
 $$ LANGUAGE SQL IMMUTABLE STRICT;
 
 ```
 
+**CRITICAL NOTE:** The operator is `<->` for L2 distance (NOT `<=>`). This is the Actian/pgvector standard.
+
 **Validation:** Run `docker-compose -f docker/docker-compose.actian.yml up -d`, check container health.
+
+---
+
+## Task 2.5: Implement SQL Retrieval Queries (from RAG.MD 3.3.1)
+
+These are the exact queries used by the Protocol and History agents. Include these for reference.
+
+### Protocol Retrieval Query
+
+```sql
+-- Retrieve top 3 matching safety protocols
+-- $1: narrative_vector (VECTOR(384), pre-normalized during embedding)
+-- Returns: protocol text, source, and similarity score
+
+SELECT
+    protocol_text,
+    source,
+    severity,
+    tags,
+    (1 - (scenario_vector <-> $1)) AS similarity_score
+FROM safety_protocols
+WHERE severity IN ('HIGH', 'CRITICAL')
+ORDER BY scenario_vector <-> $1 ASC  -- L2 distance ascending = most similar first
+LIMIT 3;
+```
+
+**Key Points:**
+- Uses `<->` operator for L2 distance (NOT `<=>`)
+- Similarity computed as `1 - distance` (higher = more similar)
+- Filters to HIGH and CRITICAL severity only
+- Orders by distance ASC (closest first)
+
+### Session History Retrieval Query
+
+```sql
+-- Retrieve up to 5 similar incidents from current session
+-- $1: narrative_vector (VECTOR(384), pre-normalized)
+-- $2: session_id (VARCHAR)
+-- $3: current_timestamp (FLOAT) - to exclude future packets (clock skew)
+
+WITH scored_incidents AS (
+    SELECT
+        raw_narrative,
+        trend_tag,
+        hazard_level,
+        fire_dominance,
+        timestamp,
+        (1 - (narrative_vector <-> $1)) AS similarity_score
+    FROM incident_log
+    WHERE session_id = $2
+      AND timestamp <= $3  -- Only past incidents
+    ORDER BY narrative_vector <-> $1 ASC
+    LIMIT 20  -- Pre-filter to top 20 by similarity for efficiency
+)
+SELECT *
+FROM scored_incidents
+WHERE similarity_score > 0.70  -- Semantic similarity threshold
+ORDER BY timestamp DESC  -- Most recent first
+LIMIT 5;
+```
+
+**Key Points:**
+- Two-stage query: IVFFlat index returns top 20, then post-filters by threshold
+- Filters by session_id to scope history to current mission
+- timestamp <= $3 prevents future packets due to clock skew
+- Orders by recency (timestamp DESC) after similarity filter
+
+---
+
+## Task 2.6: Incident Batch Writer Implementation (from RAG.MD 3.4.5)
+
+The incident logger uses batched writes to reduce Actian load. Here's the implementation for reference:
+
+Create `backend/db/batch_writer.py`:
+
+```python
+import asyncio
+import time
+import logging
+from typing import List, Dict
+
+logger = logging.getLogger(__name__)
+
+
+class IncidentBatchWriter:
+    """
+    Accumulates incident_log writes and flushes to Actian periodically.
+
+    Design (from RAG.MD 3.4.5):
+    - Time-based trigger: flushes every flush_interval_seconds
+    - Background asyncio task runs flush loop
+    - Thread-safe for concurrent add_incident() calls
+    - Graceful shutdown: flushes remaining incidents on cleanup
+    """
+
+    def __init__(self, db_connection_pool, flush_interval_seconds: float = 2.0):
+        self.db_pool = db_connection_pool
+        self.flush_interval = flush_interval_seconds
+        self.buffer: List[Dict] = []
+        self.buffer_lock = asyncio.Lock()
+        self.flush_task = None
+        self.running = False
+
+    async def start(self):
+        """Start the background flush task."""
+        self.running = True
+        self.flush_task = asyncio.create_task(self._flush_loop())
+        logger.info(f"IncidentBatchWriter started (flush every {self.flush_interval}s)")
+
+    async def stop(self):
+        """Stop the background task and flush remaining incidents."""
+        self.running = False
+        if self.flush_task:
+            await self.flush_task
+        await self._flush()  # Final flush
+        logger.info("IncidentBatchWriter stopped")
+
+    async def add_incident(self, incident: Dict):
+        """
+        Add an incident to the batch buffer.
+
+        Args:
+            incident: Dict with keys matching incident_log schema:
+                - timestamp, session_id, device_id
+                - narrative_vector, raw_narrative
+                - trend_tag, hazard_level
+                - fire_dominance, smoke_opacity, proximity_alert
+        """
+        async with self.buffer_lock:
+            self.buffer.append(incident)
+
+            # Safety: if buffer grows too large (>100 incidents), flush immediately
+            if len(self.buffer) >= 100:
+                logger.warning(f"Buffer overflow at {len(self.buffer)} incidents, flushing early")
+                await self._flush()
+
+    async def _flush_loop(self):
+        """Background task that flushes buffer every flush_interval seconds."""
+        while self.running:
+            await asyncio.sleep(self.flush_interval)
+            await self._flush()
+
+    async def _flush(self):
+        """Write all buffered incidents to Actian in a single transaction."""
+        async with self.buffer_lock:
+            if not self.buffer:
+                return  # Nothing to flush
+
+            incidents = self.buffer.copy()
+            self.buffer.clear()
+
+        # Execute batch insert in a transaction
+        start = time.perf_counter()
+        try:
+            await self._batch_insert(incidents)
+            flush_time = (time.perf_counter() - start) * 1000
+            logger.info(f"✓ Flushed {len(incidents)} incidents to Actian in {flush_time:.2f}ms")
+        except Exception as e:
+            logger.error(f"✗ Batch write failed: {e}")
+            # For safety-critical systems, log failure and continue (don't retry to avoid blocking)
+
+    async def _batch_insert(self, incidents: List[Dict]):
+        """
+        Insert multiple incidents using parameterized batch query.
+
+        Uses Actian's executemany() for efficient batch inserts.
+        """
+        query = """
+        INSERT INTO incident_log (
+            timestamp, session_id, device_id,
+            narrative_vector, raw_narrative,
+            trend_tag, hazard_level,
+            fire_dominance, smoke_opacity, proximity_alert
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        """
+
+        async with self.db_pool.acquire() as conn:
+            await conn.executemany(query, [
+                (
+                    inc['timestamp'],
+                    inc['session_id'],
+                    inc['device_id'],
+                    inc['narrative_vector'],
+                    inc['raw_narrative'],
+                    inc['trend_tag'],
+                    inc['hazard_level'],
+                    inc['fire_dominance'],
+                    inc['smoke_opacity'],
+                    inc['proximity_alert']
+                )
+                for inc in incidents
+            ])
+```
+
+**Benefits (from RAG.MD 3.4.5):**
+- **10x write reduction**: At 1 packet/sec, reduces from 1800 writes/30min to ~180 batched writes
+- **Lower Actian load**: Batch inserts are more efficient than individual INSERTs
+- **Non-blocking**: add_incident() returns immediately; flushing happens in background
+
+**Trade-offs:**
+- **Delayed persistence**: Incidents are in-memory for up to 2 seconds before being written
+- **Risk of loss**: If RAG container crashes, up to 2 seconds of incidents are lost
+- **Mitigation**: Acceptable for non-critical incident logging. Reflex data is still transmitted immediately.
 
 ---
 
@@ -283,8 +488,10 @@ async def seed_protocols():
 
     for i, protocol in enumerate(SAFETY_PROTOCOLS):
         # Embed scenario description
+        # CRITICAL: Use normalize_embeddings=True for L2 distance compatibility
+        # (from RAG.MD 3.3.1: vectors MUST be normalized to unit length)
         scenario_text = protocol["scenario"]
-        vector = model.encode(scenario_text).tolist()
+        vector = model.encode(scenario_text, normalize_embeddings=True).tolist()
 
         # Insert into database
         await conn.execute(

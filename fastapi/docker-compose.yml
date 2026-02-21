@@ -1,0 +1,165 @@
+version: '3.8'
+
+services:
+  # Actian Vector Database - Persistent vector storage for protocols and incident history
+  actian:
+    image: actian/vector:latest
+    container_name: hacklytics_actian
+    ports:
+      - "5432:5432"
+    environment:
+      VECTOR_DB_NAME: ${ACTIAN_DB:-safety_db}
+      POSTGRES_USER: ${ACTIAN_USER:-vectoruser}
+      POSTGRES_PASSWORD: ${ACTIAN_PASSWORD}  # Required: Set in .env
+      POSTGRES_DB: ${ACTIAN_DB:-safety_db}
+    volumes:
+      - actian_data:/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - rag_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ACTIAN_USER:-vectoruser} -d ${ACTIAN_DB:-safety_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    # Resource limits to prevent runaway consumption
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # RAG Service - Embedding, retrieval, synthesis, incident logging
+  rag:
+    build:
+      context: .
+      dockerfile: Dockerfile.rag
+    container_name: hacklytics_rag
+    ports:
+      - "8001:8001"
+    environment:
+      ACTIAN_HOST: actian
+      ACTIAN_PORT: 5432
+      ACTIAN_DB: ${ACTIAN_DB:-safety_db}
+      ACTIAN_USER: ${ACTIAN_USER:-vectoruser}
+      ACTIAN_PASSWORD: ${ACTIAN_PASSWORD}  # Required: Set in .env
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      BATCH_FLUSH_INTERVAL: ${BATCH_FLUSH_INTERVAL:-2.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      actian:
+        condition: service_healthy
+    networks:
+      - rag_network
+    volumes:
+      # Removed :ro flag - PYTHONDONTWRITEBYTECODE in Dockerfile prevents .pyc writes anyway
+      - ./backend:/app/backend
+      - model_cache:/root/.cache/torch
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G  # Higher for ML model
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  # Ingest Service - ZeroMQ subscriber, temporal buffer, WebSocket publisher
+  ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile.ingest
+    container_name: hacklytics_ingest
+    ports:
+      - "8000:8000"
+      - "5555:5555"
+    environment:
+      ZMQ_BIND_ADDRESS: ${ZMQ_BIND_ADDRESS:-tcp://*:5555}
+      RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://rag:8001}
+      WEBSOCKET_PORT: ${WEBSOCKET_PORT:-8000}
+      BUFFER_WINDOW_SECONDS: ${BUFFER_WINDOW_SECONDS:-10.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      rag:
+        condition: service_healthy
+    networks:
+      - rag_network
+    volumes:
+      # Removed :ro flag - PYTHONDONTWRITEBYTECODE in Dockerfile prevents .pyc writes anyway
+      - ./backend:/app/backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # Test Runner - Runs test profiles 1-7 inside containerized environment
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.rag  # Reuses RAG image which has all dependencies
+    container_name: hacklytics_test_runner
+    environment:
+      ACTIAN_HOST: actian
+      ACTIAN_PORT: 5432
+      ACTIAN_DB: ${ACTIAN_DB:-safety_db}
+      ACTIAN_USER: ${ACTIAN_USER:-vectoruser}
+      ACTIAN_PASSWORD: ${ACTIAN_PASSWORD}  # Required: Set in .env
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      PYTHONPATH: /app
+    depends_on:
+      actian:
+        condition: service_healthy
+    networks:
+      - rag_network
+    volumes:
+      # Removed :ro flags - tests may need to write coverage reports
+      - ./backend:/app/backend
+      - ./tests:/app/tests
+      - model_cache:/root/.cache/torch
+    profiles:
+      - test
+    command: ["pytest", "tests/test_profiles/", "-v", "-s", "--tb=short"]
+    # Resource limits for test runner
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+networks:
+  rag_network:
+    driver: bridge
+    name: hacklytics_rag_network
+
+volumes:
+  actian_data:
+    name: hacklytics_actian_data
+    driver: local
+  model_cache:
+    name: hacklytics_model_cache
+    driver: local
