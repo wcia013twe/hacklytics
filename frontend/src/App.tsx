@@ -9,25 +9,51 @@ import { ImageStack } from './components/ImageStack';
 import { useDashboardSocket } from './hooks/useDashboardSocket';
 
 function App() {
-  const { payload, latencyMs, isConnected } = useDashboardSocket();
+  const { payload, latencyMs, isConnected, clearPayload } = useDashboardSocket();
   const [simRunning, setSimRunning] = useState(false);
   const [simLoading, setSimLoading] = useState(false);
   const [selectedResponderId, setSelectedResponderId] = useState<string | null>(null);
 
-  // Toggle simulation via gateway REST API
+  // Toggle simulation via gateway REST API + backend demo
   const toggleSimulation = useCallback(async () => {
     setSimLoading(true);
     try {
       const endpoint = simRunning ? '/sim/stop' : '/sim/start';
-      const res = await fetch(`http://127.0.0.1:8080${endpoint}`, { method: 'POST' });
-      const data = await res.json();
-      setSimRunning(data.running ?? !simRunning);
+      const demoEndpoint = simRunning ? '/demo/stop' : '/demo/start';
+
+      // Clear payload when starting simulation
+      if (!simRunning) {
+        clearPayload();
+      }
+
+      // Call BOTH gateway sim and backend demo
+      const [gatewayRes, demoRes] = await Promise.all([
+        fetch(`http://127.0.0.1:8080${endpoint}`, { method: 'POST' }).catch(e => {
+          console.warn('Gateway not running on :8080, skipping gateway sim:', e);
+          return null;
+        }),
+        fetch(`http://127.0.0.1:8000${demoEndpoint}`, { method: 'POST' }).catch(e => {
+          console.warn('Backend demo API not available on :8000, skipping demo:', e);
+          return null;
+        })
+      ]);
+
+      // Use gateway response if available, otherwise demo response
+      if (gatewayRes) {
+        const data = await gatewayRes.json();
+        setSimRunning(data.running ?? !simRunning);
+      } else if (demoRes) {
+        const data = await demoRes.json();
+        setSimRunning(data.status === 'started' || data.running ?? !simRunning);
+      } else {
+        console.error('Both gateway and backend demo unavailable');
+      }
     } catch (e) {
       console.error('Failed to toggle simulation:', e);
     } finally {
       setSimLoading(false);
     }
-  }, [simRunning]);
+  }, [simRunning, clearPayload]);
 
   // Check simulation status on mount
   useEffect(() => {
