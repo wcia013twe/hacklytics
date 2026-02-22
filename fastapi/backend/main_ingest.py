@@ -18,6 +18,146 @@ logger = logging.getLogger(__name__)
 orchestrator: RAGOrchestrator = None
 zmq_task = None
 
+# ==============================================================================
+# DEMO MODE: Embedded scenario data for multi-location demo
+# ==============================================================================
+
+DEMO_SCENARIOS = {
+    "kitchen": {
+        "responder_id": "DEMO_KITCHEN",
+        "location": "Kitchen (Building A)",
+        "events": [
+            {
+                "timestamp_offset": 0,
+                "hazard_level": "CAUTION",
+                "narrative": "Small grease fire detected on stove. Smoke detector activated.",
+                "protocol_id": "205",
+                "hazard_type": "Combustible Area",
+                "commands": [
+                    {"target": "Alpha-1", "directive": "Report fire size & trend"}
+                ]
+            },
+            {
+                "timestamp_offset": 15,
+                "hazard_level": "HIGH",
+                "narrative": "Fire spreading to nearby cabinets. Flames reaching 3ft height.",
+                "protocol_id": "305",
+                "hazard_type": "Active Fire Growth",
+                "commands": [
+                    {"target": "Alpha-1", "directive": "Deploy class B extinguisher"},
+                    {"target": "Charlie-3", "directive": "Monitor AQI levels"}
+                ]
+            },
+            {
+                "timestamp_offset": 30,
+                "hazard_level": "CRITICAL",
+                "narrative": "FLASHOVER IMMINENT. Full room involvement. Evacuate immediately.",
+                "protocol_id": "402",
+                "hazard_type": "Flashover Risk",
+                "commands": [
+                    {"target": "Alpha-1", "directive": "EVACUATE NORTH - 100FT (BLEVE)"}
+                ]
+            },
+            {
+                "timestamp_offset": 45,
+                "hazard_level": "CRITICAL",
+                "narrative": "Post-flashover. Sustained 500F+ temperatures. Structure compromised.",
+                "protocol_id": "71A",
+                "hazard_type": "Structural Collapse",
+                "commands": [
+                    {"target": "ALL UNITS", "directive": "MINIMUM 100FT STANDOFF"}
+                ]
+            }
+        ]
+    },
+    "hallway": {
+        "responder_id": "DEMO_HALLWAY",
+        "location": "Hallway (Building A)",
+        "events": [
+            {
+                "timestamp_offset": 0,
+                "hazard_level": "CLEAR",
+                "narrative": "Routine patrol. No hazards detected. All exits clear.",
+                "protocol_id": "100",
+                "hazard_type": "None",
+                "commands": [
+                    {"target": "ALL UNITS", "directive": "Maintain patrol vectors"}
+                ]
+            },
+            {
+                "timestamp_offset": 20,
+                "hazard_level": "CAUTION",
+                "narrative": "Smoke entering from kitchen door. Visibility reducing to 30ft.",
+                "protocol_id": "220",
+                "hazard_type": "Smoke Propagation",
+                "commands": [
+                    {"target": "Bravo-2", "directive": "Monitor smoke density"},
+                    {"target": "Charlie-3", "directive": "Prepare thermal imaging"}
+                ]
+            },
+            {
+                "timestamp_offset": 35,
+                "hazard_level": "HIGH",
+                "narrative": "Heavy smoke. Visibility <10ft. Emergency lighting activated.",
+                "protocol_id": "330",
+                "hazard_type": "Zero Visibility Environment",
+                "commands": [
+                    {"target": "Bravo-2", "directive": "Activate SCBA"},
+                    {"target": "Charlie-3", "directive": "Establish rope guideline"}
+                ]
+            },
+            {
+                "timestamp_offset": 50,
+                "hazard_level": "HIGH",
+                "narrative": "Near-zero visibility. Thermal imaging required. Exit routes compromised.",
+                "protocol_id": "330",
+                "hazard_type": "Zero Visibility Environment",
+                "commands": [
+                    {"target": "Bravo-2", "directive": "Mark egress path with chem lights"}
+                ]
+            }
+        ]
+    },
+    "living_room": {
+        "responder_id": "DEMO_LIVING_ROOM",
+        "location": "Living Room (Building A)",
+        "events": [
+            {
+                "timestamp_offset": 0,
+                "hazard_level": "CLEAR",
+                "narrative": "Normal conditions. Structural integrity nominal.",
+                "protocol_id": "100",
+                "hazard_type": "None",
+                "commands": [
+                    {"target": "ALL UNITS", "directive": "Continue monitoring"}
+                ]
+            },
+            {
+                "timestamp_offset": 40,
+                "hazard_level": "CAUTION",
+                "narrative": "Elevated ambient temperature. Minor structural stress indicators detected.",
+                "protocol_id": "240",
+                "hazard_type": "Structural Monitoring",
+                "commands": [
+                    {"target": "Delta-4", "directive": "Inspect load-bearing walls"},
+                    {"target": "Echo-5", "directive": "Monitor ceiling integrity"}
+                ]
+            },
+            {
+                "timestamp_offset": 50,
+                "hazard_level": "HIGH",
+                "narrative": "Ceiling integrity compromised. Visible cracks. Load-bearing wall stressed.",
+                "protocol_id": "71A",
+                "hazard_type": "Structural Collapse Risk",
+                "commands": [
+                    {"target": "Delta-4", "directive": "EVACUATE - Collapse imminent"},
+                    {"target": "Echo-5", "directive": "Establish collapse zone perimeter"}
+                ]
+            }
+        ]
+    }
+}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
