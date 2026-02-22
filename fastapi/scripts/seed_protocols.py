@@ -13,13 +13,13 @@ Environment Variables:
     ACTIAN_PORT (default: 50051)
 """
 
+import asyncio
 import os
 import sys
-from sentence_transformers import SentenceTransformer
 from typing import List, Dict
 
-# Add backend to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from sentence_transformers import SentenceTransformer
+from cortex import AsyncCortexClient
 
 # Load environment variables
 ACTIAN_HOST = os.getenv("ACTIAN_HOST", "vectoraidb")
@@ -110,15 +110,7 @@ PROTOCOLS: List[Dict] = [
 ]
 
 
-def seed_protocols():
-    """
-    Main seeding function using Actian VectorAI DB gRPC client.
-
-    1. Load sentence-transformers model
-    2. Connect to Actian Vector DB via gRPC
-    3. Embed each protocol scenario
-    4. Insert into safety_protocols collection
-    """
+async def main():
     print("=" * 60)
     print("Safety Protocol Seeding Script (Actian VectorAI DB)")
     print("=" * 60)
@@ -129,52 +121,66 @@ def seed_protocols():
     print("✓ Model loaded: all-MiniLM-L6-v2 (384 dimensions)")
 
     # Step 2: Connect to Actian VectorAI DB
-    print(f"\n[2/4] Connecting to Actian VectorAI DB at {ACTIAN_HOST}:{ACTIAN_PORT}...")
+    address = f"{ACTIAN_HOST}:{ACTIAN_PORT}"
+    print(f"\n[2/4] Connecting to Actian VectorAI DB at {address}...")
 
-    try:
-        # Import Actian client
-        try:
-            import actiancortex
-            print("✓ Actian client library loaded")
-        except ImportError:
-            print("✗ actiancortex library not found")
-            print("  Install with: pip install actiancortex-0.1.0b1-py3-none-any.whl")
-            return
+    client = AsyncCortexClient(address=address)
+    await client.connect()
+    print("✓ Connected")
 
-        # TODO: Initialize Actian client connection
-        # client = actiancortex.VectorAIClient(host=ACTIAN_HOST, port=ACTIAN_PORT)
-        print(f"⚠️  Note: Actian client integration pending. Connection to {ACTIAN_HOST}:{ACTIAN_PORT}")
-
-    except Exception as e:
-        print(f"✗ Connection failed: {e}")
-        print("\nMake sure the VectorAI DB container is running:")
-        print("  docker compose up -d vectoraidb")
-        return
-
-    # Step 3: Embed and display protocols
+    # Step 3: Embed protocols
     print(f"\n[3/4] Embedding {len(PROTOCOLS)} protocols...")
 
-    embeddings = []
+    ids = []
+    vectors = []
+    payloads = []
+
     for i, protocol in enumerate(PROTOCOLS, 1):
-        # Embed scenario description
         scenario_text = protocol["scenario"]
         vector = model.encode(scenario_text, normalize_embeddings=True).tolist()
 
-        embeddings.append({
-            "vector": vector,
-            "metadata": protocol
+        ids.append(i)
+        vectors.append(vector)
+        payloads.append({
+            "protocol_text": protocol["protocol_text"],
+            "severity": protocol["severity"],
+            "category": protocol["category"],
+            "tags": protocol["tags"],
+            "source": protocol["source"],
+            "scenario": protocol["scenario"],
         })
 
         print(f"  [{i}/{len(PROTOCOLS)}] {protocol['severity']:8s} | {protocol['scenario'][:50]}")
 
-    print(f"\n✓ Generated {len(embeddings)} embeddings")
+    print(f"\n✓ Generated {len(vectors)} embeddings")
 
-    # Step 4: Insert into VectorAI DB
-    print("\n[4/4] Inserting protocols into VectorAI DB...")
-    print("⚠️  TODO: Implement Actian VectorAI DB insertion")
-    print("  - Create 'safety_protocols' collection")
-    print("  - Insert vectors with metadata")
-    print("  - Verify insertion with similarity search")
+    # Step 4: Batch upsert into VectorAI DB
+    print("\n[4/4] Upserting protocols into safety_protocols collection...")
+
+    await client.batch_upsert(
+        collection_name="safety_protocols",
+        ids=ids,
+        vectors=vectors,
+        payloads=payloads,
+    )
+
+    print(f"✓ Upserted {len(ids)} protocols")
+
+    # Verification: run a test search
+    print("\n[Verify] Running test search: 'fire growing rapidly' ...")
+    test_vector = model.encode("fire growing rapidly", normalize_embeddings=True).tolist()
+    results = await client.search(
+        collection_name="safety_protocols",
+        query=test_vector,
+        top_k=3,
+        with_payload=True,
+    )
+
+    print(f"✓ Test search returned {len(results)} results:")
+    for r in results:
+        print(f"  - score={r.score:.4f} | {r.payload.get('severity', '?'):8s} | {r.payload.get('scenario', '?')[:50]}")
+
+    await client.close()
 
     # Display protocol summary
     print("\n" + "=" * 60)
@@ -190,12 +196,9 @@ def seed_protocols():
     for severity, count in sorted(severity_counts.items()):
         print(f"  {severity:10s}: {count:2d} protocols")
 
-    print(f"\nTotal: {len(PROTOCOLS)} protocols ready for seeding")
-    print("\n" + "=" * 60)
-    print("⚠️  Seeding simulation complete!")
-    print("   Full integration requires Actian VectorAI DB client setup")
+    print(f"\nTotal: {len(PROTOCOLS)} protocols seeded successfully")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    seed_protocols()
+    asyncio.run(main())

@@ -32,7 +32,7 @@ def sample_packet():
 @pytest.mark.asyncio
 async def test_orchestrator_reflex_path(sample_packet):
     """Test that reflex path always executes"""
-    orchestrator = RAGOrchestrator(actian_pool=None)
+    orchestrator = RAGOrchestrator(actian_client=None)
     await orchestrator.startup()
 
     raw_message = json.dumps(sample_packet)
@@ -47,7 +47,7 @@ async def test_orchestrator_reflex_path(sample_packet):
 @pytest.mark.asyncio
 async def test_orchestrator_invalid_packet():
     """Test that invalid packets are rejected at intake"""
-    orchestrator = RAGOrchestrator(actian_pool=None)
+    orchestrator = RAGOrchestrator(actian_client=None)
     await orchestrator.startup()
 
     invalid_packet = {"invalid": "data"}
@@ -63,7 +63,7 @@ async def test_orchestrator_invalid_packet():
 @pytest.mark.asyncio
 async def test_orchestrator_trend_computation(sample_packet):
     """Test that trend is computed from buffer"""
-    orchestrator = RAGOrchestrator(actian_pool=None)
+    orchestrator = RAGOrchestrator(actian_client=None)
     await orchestrator.startup()
 
     # Send 5 packets with increasing fire_dominance
@@ -88,7 +88,7 @@ async def test_orchestrator_trend_computation(sample_packet):
 @pytest.mark.asyncio
 async def test_orchestrator_rag_skipped_for_low_hazard():
     """Test that RAG is not invoked for LOW hazard"""
-    orchestrator = RAGOrchestrator(actian_pool=None)
+    orchestrator = RAGOrchestrator(actian_client=None)
     await orchestrator.startup()
 
     packet = {

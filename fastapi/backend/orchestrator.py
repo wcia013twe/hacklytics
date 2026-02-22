@@ -84,15 +84,15 @@ class RAGOrchestrator:
     6. Stage 6: Logging
     """
 
-    def __init__(self, actian_pool=None, redis_url: str = None):
+    def __init__(self, actian_client=None, redis_url: str = None):
         # Initialize all agents
         self.telemetry_agent = TelemetryIngestAgent()
         self.temporal_buffer = TemporalBufferAgent(window_seconds=10)
         self.reflex_publisher = ReflexPublisherAgent()
         self.embedding_agent = EmbeddingAgent()
-        self.protocol_agent = ProtocolRetrievalAgent(actian_pool) if actian_pool else None
-        self.history_agent = HistoryRetrievalAgent(actian_pool) if actian_pool else None
-        self.incident_logger = IncidentLoggerAgent(actian_pool) if actian_pool else None
+        self.protocol_agent = ProtocolRetrievalAgent(actian_client) if actian_client else None
+        self.history_agent = HistoryRetrievalAgent(actian_client) if actian_client else None
+        self.incident_logger = IncidentLoggerAgent(actian_client) if actian_client else None
         self.synthesis_agent = SynthesisAgent()
         self.guardrails_agent = SafetyGuardrailsAgent()
 
@@ -109,7 +109,7 @@ class RAGOrchestrator:
         # State management
         self.metrics = OrchestratorMetrics()
         self.rag_health = RAGHealth(timeout=5)
-        self.actian_pool = actian_pool
+        self.actian_client = actian_client
 
     async def startup(self):
         """
@@ -120,9 +120,14 @@ class RAGOrchestrator:
         # Warmup embedding model (critical: first call is slow)
         await self.embedding_agent.warmup_model()
 
-        # TODO: Warmup Actian indexes with dummy query
-        # if self.protocol_agent:
-        #     await self.protocol_agent.warmup_query()
+        # Actian health check (warn on failure, don't crash)
+        if self.actian_client:
+            try:
+                collections = await self.actian_client.list_collections()
+                names = [c.name for c in collections]
+                logger.info(f"Actian connected — collections: {names}")
+            except Exception as e:
+                logger.warning(f"Actian health check failed (non-fatal): {e}")
 
         logger.info("RAGOrchestrator ready")
 

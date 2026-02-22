@@ -14,13 +14,16 @@ logger = logging.getLogger(__name__)
 # Global orchestrator instance
 orchestrator: RAGOrchestrator = None
 
+# Global Actian client (for shutdown)
+_actian_client = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     FastAPI lifespan: startup and shutdown hooks
     """
-    global orchestrator
+    global orchestrator, _actian_client
 
     logger.info("Starting RAG service...")
 
@@ -29,19 +32,54 @@ async def lifespan(app: FastAPI):
     actian_port = int(os.getenv("ACTIAN_PORT", "50051"))
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 
-    # TODO: Initialize Actian connection pool
-    actian_pool = None  # Placeholder until Actian client is implemented
+    # Initialize Actian client via Cortex gRPC SDK
+    actian_client = None
+    try:
+        from cortex import AsyncCortexClient
+
+        address = f"{actian_host}:{actian_port}"
+        actian_client = AsyncCortexClient(
+            address=address,
+            pool_size=3,
+            enable_smart_batching=True,
+        )
+        await actian_client.connect()
+        logger.info(f"Actian client connected at {address}")
+
+        # Ensure collections exist (idempotent)
+        for col_name in ("safety_protocols", "incident_log"):
+            try:
+                await actian_client.get_or_create_collection(
+                    name=col_name,
+                    vector_size=384,
+                    distance="COSINE",
+                )
+                logger.info(f"Collection ready: {col_name}")
+            except Exception as e:
+                logger.warning(f"Collection {col_name} setup failed (non-fatal): {e}")
+
+        _actian_client = actian_client
+
+    except Exception as e:
+        logger.error(f"Actian client init failed (graceful degradation): {e}")
+        actian_client = None
 
     # Initialize orchestrator
-    orchestrator = RAGOrchestrator(actian_pool=actian_pool, redis_url=redis_url)
+    orchestrator = RAGOrchestrator(actian_client=actian_client, redis_url=redis_url)
     await orchestrator.startup()
 
-    logger.info(f"RAG service ready (Actian: {actian_host}:{actian_port})")
+    logger.info(f"RAG service ready (Actian: {actian_host}:{actian_port}, connected={actian_client is not None})")
 
     yield
 
     # Shutdown
     logger.info("Shutting down RAG service...")
+    if _actian_client:
+        try:
+            await _actian_client.close()
+            logger.info("Actian client closed")
+        except Exception as e:
+            logger.warning(f"Actian client close error: {e}")
 
 
 app = FastAPI(lifespan=lifespan, title="RAG Service API", version="1.0")
@@ -53,6 +91,7 @@ async def health():
     return {
         "status": "healthy",
         "service": "rag",
+        "actian_connected": _actian_client is not None,
         "rag_healthy": orchestrator.rag_health.is_healthy() if orchestrator else False,
         "metrics": orchestrator.metrics.summary() if orchestrator else {}
     }

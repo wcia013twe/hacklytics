@@ -1,8 +1,9 @@
+import os
 import pytest
 from typing import List, Dict
 
-# This test requires Actian to be running with seeded protocols
-# For now, we'll create a mock version that can be updated once Actian is available
+from backend.agents.protocol_retrieval import ProtocolRetrievalAgent
+
 
 @pytest.fixture
 def test_scenarios():
@@ -57,7 +58,32 @@ def test_scenarios():
     ]
 
 
-@pytest.mark.skipif(True, reason="Requires Actian with seeded protocols")
+@pytest.fixture
+async def actian_client():
+    """Create a real Cortex client for integration tests."""
+    host = os.getenv("ACTIAN_HOST", "vectoraidb")
+    port = int(os.getenv("ACTIAN_PORT", "50051"))
+
+    from cortex import AsyncCortexClient
+
+    client = AsyncCortexClient(address=f"{host}:{port}")
+    await client.connect()
+    yield client
+    await client.close()
+
+
+@pytest.fixture
+def protocol_agent(actian_client):
+    return ProtocolRetrievalAgent(actian_client)
+
+
+@pytest.fixture
+def embedding_model():
+    from sentence_transformers import SentenceTransformer
+    return SentenceTransformer('all-MiniLM-L6-v2')
+
+
+@pytest.mark.asyncio
 async def test_protocol_retrieval_precision(test_scenarios, embedding_model, protocol_agent):
     """
     Test Profile 2: Protocol Retrieval Precision
@@ -65,7 +91,7 @@ async def test_protocol_retrieval_precision(test_scenarios, embedding_model, pro
     For each scenario, retrieve top-3 protocols and check if expected tags appear.
 
     Pass Criteria:
-    - Precision@3 ≥ 80% (8 out of 10 scenarios have correct protocol in top 3)
+    - Precision@3 >= 80% (8 out of 10 scenarios have correct protocol in top 3)
     """
 
     matches = 0
@@ -102,7 +128,7 @@ async def test_protocol_retrieval_precision(test_scenarios, embedding_model, pro
     print(f"\nPrecision@3: {precision:.2%} ({matches}/{total})")
 
     assert precision >= 0.80, f"Precision {precision:.2%} < 80%"
-    print("✅ PASS: Protocol retrieval precision meets target")
+    print("PASS: Protocol retrieval precision meets target")
 
 
 def test_protocol_retrieval_mock():
@@ -111,6 +137,6 @@ def test_protocol_retrieval_mock():
 
     This is a placeholder that will be replaced when Actian is available.
     """
-    print("\n⚠️  Mock test: Actian not available")
+    print("\nMock test: Actian not available")
     print("   When Actian is running with seeded protocols, update this test.")
     assert True  # Always pass for now
