@@ -54,6 +54,8 @@ services:
     volumes:
       # Removed :ro flag - PYTHONDONTWRITEBYTECODE in Dockerfile prevents .pyc writes anyway
       - ./backend:/app/backend
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
       - model_cache:/root/.cache/torch
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
@@ -94,6 +96,8 @@ services:
     volumes:
       # Removed :ro flag - PYTHONDONTWRITEBYTECODE in Dockerfile prevents .pyc writes anyway
       - ./backend:/app/backend
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s

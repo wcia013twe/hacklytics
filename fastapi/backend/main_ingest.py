@@ -6,7 +6,7 @@ import zmq.asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 
-from orchestrator import RAGOrchestrator
+from .orchestrator import RAGOrchestrator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

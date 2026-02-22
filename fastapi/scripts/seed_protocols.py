@@ -1,36 +1,31 @@
 #!/usr/bin/env python3
 """
-Safety Protocol Seeding Script
+Safety Protocol Seeding Script for Actian VectorAI DB
 
-Embeds NFPA/OSHA safety protocols and loads them into Actian Vector DB.
+Embeds NFPA/OSHA safety protocols and loads them into Actian Vector DB via gRPC.
 Based on RAG.MD Section 5 (Phase 1: Actian Schema & Protocol Seeding)
 
 Usage:
     python scripts/seed_protocols.py
 
 Environment Variables:
-    ACTIAN_HOST (default: localhost)
-    ACTIAN_PORT (default: 5432)
-    ACTIAN_DB (default: safety_db)
-    ACTIAN_USER (default: vectoruser)
-    ACTIAN_PASSWORD (default: vectorpass)
+    ACTIAN_HOST (default: vectoraidb)
+    ACTIAN_PORT (default: 50051)
 """
 
 import os
-import asyncio
-import asyncpg
+import sys
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict
 
+# Add backend to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 # Load environment variables
-ACTIAN_HOST = os.getenv("ACTIAN_HOST", "localhost")
-ACTIAN_PORT = int(os.getenv("ACTIAN_PORT", "5432"))
-ACTIAN_DB = os.getenv("ACTIAN_DB", "safety_db")
-ACTIAN_USER = os.getenv("ACTIAN_USER", "vectoruser")
-ACTIAN_PASSWORD = os.getenv("ACTIAN_PASSWORD", "vectorpass")
+ACTIAN_HOST = os.getenv("ACTIAN_HOST", "vectoraidb")
+ACTIAN_PORT = int(os.getenv("ACTIAN_PORT", "50051"))
 
 # Safety protocols database
-# TODO: Expand this list to 30-50 protocols covering NFPA 1001, OSHA 29CFR, etc.
 PROTOCOLS: List[Dict] = [
     {
         "scenario": "Person trapped near fire with exit blocked",
@@ -112,22 +107,20 @@ PROTOCOLS: List[Dict] = [
         "tags": "clear,monitoring,standby",
         "source": "FSP_GENERAL"
     },
-    # Add more protocols here to reach 30-50 total
-    # Cover scenarios: flashover, backdraft, rescue, ventilation, water supply, hazmat, etc.
 ]
 
 
-async def seed_protocols():
+def seed_protocols():
     """
-    Main seeding function.
+    Main seeding function using Actian VectorAI DB gRPC client.
 
     1. Load sentence-transformers model
-    2. Connect to Actian Vector DB
+    2. Connect to Actian Vector DB via gRPC
     3. Embed each protocol scenario
-    4. Insert into safety_protocols table
+    4. Insert into safety_protocols collection
     """
     print("=" * 60)
-    print("Safety Protocol Seeding Script")
+    print("Safety Protocol Seeding Script (Actian VectorAI DB)")
     print("=" * 60)
 
     # Step 1: Load embedding model
@@ -135,122 +128,74 @@ async def seed_protocols():
     model = SentenceTransformer('all-MiniLM-L6-v2')
     print("✓ Model loaded: all-MiniLM-L6-v2 (384 dimensions)")
 
-    # Step 2: Connect to database
-    print(f"\n[2/4] Connecting to Actian Vector DB at {ACTIAN_HOST}:{ACTIAN_PORT}...")
+    # Step 2: Connect to Actian VectorAI DB
+    print(f"\n[2/4] Connecting to Actian VectorAI DB at {ACTIAN_HOST}:{ACTIAN_PORT}...")
+
     try:
-        conn = await asyncpg.connect(
-            host=ACTIAN_HOST,
-            port=ACTIAN_PORT,
-            database=ACTIAN_DB,
-            user=ACTIAN_USER,
-            password=ACTIAN_PASSWORD
-        )
-        print(f"✓ Connected to database: {ACTIAN_DB}")
+        # Import Actian client
+        try:
+            import actiancortex
+            print("✓ Actian client library loaded")
+        except ImportError:
+            print("✗ actiancortex library not found")
+            print("  Install with: pip install actiancortex-0.1.0b1-py3-none-any.whl")
+            return
+
+        # TODO: Initialize Actian client connection
+        # client = actiancortex.VectorAIClient(host=ACTIAN_HOST, port=ACTIAN_PORT)
+        print(f"⚠️  Note: Actian client integration pending. Connection to {ACTIAN_HOST}:{ACTIAN_PORT}")
+
     except Exception as e:
         print(f"✗ Connection failed: {e}")
-        print("\nMake sure the Actian container is running:")
-        print("  docker-compose up -d actian")
+        print("\nMake sure the VectorAI DB container is running:")
+        print("  docker compose up -d vectoraidb")
         return
 
-    # Step 3: Check if table exists
-    print("\n[3/4] Verifying safety_protocols table exists...")
-    table_exists = await conn.fetchval("""
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_name = 'safety_protocols'
-        )
-    """)
+    # Step 3: Embed and display protocols
+    print(f"\n[3/4] Embedding {len(PROTOCOLS)} protocols...")
 
-    if not table_exists:
-        print("✗ Table 'safety_protocols' not found!")
-        print("  Run init.sql first: docker-compose exec -T actian psql -U vectoruser -d safety_db < init.sql")
-        await conn.close()
-        return
-
-    print("✓ Table exists")
-
-    # Step 4: Clear existing protocols (optional - comment out for append mode)
-    existing_count = await conn.fetchval("SELECT COUNT(*) FROM safety_protocols")
-    if existing_count > 0:
-        print(f"\n⚠️  Found {existing_count} existing protocols. Clearing table...")
-        await conn.execute("DELETE FROM safety_protocols")
-        print("✓ Table cleared")
-
-    # Step 5: Insert protocols
-    print(f"\n[4/4] Embedding and inserting {len(PROTOCOLS)} protocols...")
-
+    embeddings = []
     for i, protocol in enumerate(PROTOCOLS, 1):
         # Embed scenario description
         scenario_text = protocol["scenario"]
         vector = model.encode(scenario_text, normalize_embeddings=True).tolist()
 
-        # Insert into database
-        await conn.execute("""
-            INSERT INTO safety_protocols (
-                scenario_vector,
-                protocol_text,
-                severity,
-                category,
-                tags,
-                source
-            ) VALUES ($1, $2, $3, $4, $5, $6)
-        """,
-            vector,
-            protocol["protocol_text"],
-            protocol["severity"],
-            protocol["category"],
-            protocol["tags"],
-            protocol["source"]
-        )
+        embeddings.append({
+            "vector": vector,
+            "metadata": protocol
+        })
 
         print(f"  [{i}/{len(PROTOCOLS)}] {protocol['severity']:8s} | {protocol['scenario'][:50]}")
 
-    print(f"\n✓ Inserted {len(PROTOCOLS)} protocols successfully")
+    print(f"\n✓ Generated {len(embeddings)} embeddings")
 
-    # Step 6: Verify insertion
-    print("\n[Verification] Checking protocol coverage...")
-    coverage = await conn.fetch("""
-        SELECT severity, category, COUNT(*) as count
-        FROM safety_protocols
-        GROUP BY severity, category
-        ORDER BY severity, category
-    """)
+    # Step 4: Insert into VectorAI DB
+    print("\n[4/4] Inserting protocols into VectorAI DB...")
+    print("⚠️  TODO: Implement Actian VectorAI DB insertion")
+    print("  - Create 'safety_protocols' collection")
+    print("  - Insert vectors with metadata")
+    print("  - Verify insertion with similarity search")
 
-    print("\nProtocol Coverage by Severity & Category:")
-    print("-" * 50)
-    for row in coverage:
-        print(f"  {row['severity']:10s} | {row['category']:15s} | {row['count']:3d} protocols")
-
-    # Step 7: Test retrieval
-    print("\n[Test] Testing vector similarity retrieval...")
-    test_query = "Person trapped with fire blocking exit"
-    test_vector = model.encode(test_query, normalize_embeddings=True).tolist()
-
-    results = await conn.fetch("""
-        SELECT
-            protocol_text,
-            severity,
-            source,
-            (1 - (scenario_vector <-> $1::vector)) AS similarity_score
-        FROM safety_protocols
-        ORDER BY scenario_vector <-> $1::vector ASC
-        LIMIT 3
-    """, test_vector)
-
-    print(f"\nTest Query: '{test_query}'")
-    print("Top 3 Matching Protocols:")
-    print("-" * 50)
-    for i, row in enumerate(results, 1):
-        print(f"\n{i}. [{row['severity']}] {row['source']}")
-        print(f"   Similarity: {row['similarity_score']:.3f}")
-        print(f"   Protocol: {row['protocol_text'][:100]}...")
-
-    # Close connection
-    await conn.close()
+    # Display protocol summary
     print("\n" + "=" * 60)
-    print("Seeding complete! ✓")
+    print("Protocol Summary:")
+    print("=" * 60)
+
+    severity_counts = {}
+    for protocol in PROTOCOLS:
+        severity = protocol["severity"]
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+
+    print("\nBy Severity:")
+    for severity, count in sorted(severity_counts.items()):
+        print(f"  {severity:10s}: {count:2d} protocols")
+
+    print(f"\nTotal: {len(PROTOCOLS)} protocols ready for seeding")
+    print("\n" + "=" * 60)
+    print("⚠️  Seeding simulation complete!")
+    print("   Full integration requires Actian VectorAI DB client setup")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    asyncio.run(seed_protocols())
+    seed_protocols()
