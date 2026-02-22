@@ -16,6 +16,7 @@ from .agents.synthesis import SynthesisAgent
 from .agents.safety_guardrails import SafetyGuardrailsAgent
 from .agents.temporal_narrative import TemporalNarrativeAgent
 from .agents.redis_cache import RAGCacheAgent
+from .agents.protocol_formatter import ProtocolFormatterAgent
 from .contracts.models import TelemetryPacket
 
 logger = logging.getLogger(__name__)
@@ -52,19 +53,15 @@ class OrchestratorMetrics:
 
 
 class RAGHealth:
-    """Health monitor for RAG service"""
+    """Health monitor for RAG pipeline (local, not remote service)."""
 
-    def __init__(self, timeout: int = 5):
-        self.timeout = timeout
-        self.last_heartbeat = time.time()
+    def __init__(self):
         self.failures = 0
 
     def is_healthy(self) -> bool:
-        age = time.time() - self.last_heartbeat
-        return age < self.timeout and self.failures < 3
+        return self.failures < 3
 
     def mark_success(self):
-        self.last_heartbeat = time.time()
         self.failures = 0
 
     def mark_failure(self):
@@ -96,19 +93,22 @@ class RAGOrchestrator:
         self.synthesis_agent = SynthesisAgent()
         self.guardrails_agent = SafetyGuardrailsAgent()
 
-        # NEW: Temporal narrative synthesis + Redis caching
-        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        # Temporal narrative synthesis via local Ollama
         self.temporal_narrative_agent = TemporalNarrativeAgent(
-            api_key=gemini_api_key,
-            model_name=os.getenv("GEMINI_MODEL", "gemini-1.5-flash-002")
-        ) if gemini_api_key else None
+            model_name=os.getenv("OLLAMA_MODEL", "llama3.2:1b"),
+            ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
+        )
+        self.protocol_formatter = ProtocolFormatterAgent(
+            model_name=os.getenv("OLLAMA_MODEL", "llama3.2:1b"),
+            ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
+        )
 
         redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
         self.cache_agent = RAGCacheAgent(redis_url=redis_url)
 
         # State management
         self.metrics = OrchestratorMetrics()
-        self.rag_health = RAGHealth(timeout=5)
+        self.rag_health = RAGHealth()
         self.actian_client = actian_client
 
     async def startup(self):
@@ -449,20 +449,93 @@ class RAGOrchestrator:
             # BROADCAST TO DASHBOARD
             # ═════════════════════════════════════════════════════════
 
-            rag_message = {
-                "message_type": "rag_recommendation",
-                "device_id": packet.device_id,
-                "recommendation": recommendation.recommendation,
-                "matched_protocol": recommendation.matched_protocol,
-                "processing_time_ms": (time.perf_counter() - start) * 1000,
-                "protocols_count": len(protocols),
-                "history_count": len(history),
-                "cache_stats": {
-                    "embedding_cached": cached_vector is not None,
-                    "protocols_cached": cached_protocols is not None,
-                    "session_cached": len(session_history) > 0 if session_history else False
+            # Build WebSocketPayload so the frontend receives a consistent format
+            # from both the reflex path and the RAG cognition path.
+            primary_protocol = protocols[0] if protocols else None
+            temp_f = round(72 + packet.scores.fire_dominance * 428)
+            from .agents.reflex_publisher import _STATUS_MAP, _TREND_MAP
+            
+            formatter_result = None
+            if primary_protocol and self.protocol_formatter:
+                formatter_result = await self.protocol_formatter.format(
+                    protocol=primary_protocol,
+                    packet=packet,
+                    synthesized_narrative=synthesized_narrative,
+                )
+
+            if formatter_result and not formatter_result.fallback_used:
+                rag_message = {
+                    "timestamp": packet.timestamp,
+                    "system_status": _STATUS_MAP[packet.hazard_level],
+                    "action_command": formatter_result.action_command,
+                    "action_reason": formatter_result.action_reason,
+                    "rag_data": {
+                        "protocol_id": primary_protocol.source,
+                        "hazard_type": formatter_result.hazard_type,
+                        "source_document": primary_protocol.source,
+                        "source_text": formatter_result.source_text,
+                        "actionable_commands": [cmd.dict() for cmd in formatter_result.actionable_commands]
+                    },
+                    "scene_context": {
+                        "entities": [
+                            {
+                                "name": o.label,
+                                "duration_sec": o.duration_in_frame,
+                                "trend": _TREND_MAP.get(o.status, "static"),
+                            }
+                            for o in packet.tracked_objects
+                        ],
+                        "telemetry": {
+                            "temp_f": temp_f,
+                            "trend": "rising" if packet.scores.fire_dominance > 0.1 else "stable",
+                        },
+                        "responders": [],
+                        "synthesized_insights": {
+                            "threat_vector": synthesized_narrative,
+                            "evacuation_radius_ft": 100 if packet.hazard_level == "CRITICAL" else (50 if packet.hazard_level == "HIGH" else None),
+                            "resource_bottleneck": None,
+                            "max_temp_f": temp_f,
+                            "max_aqi": round(packet.scores.smoke_opacity * 500),
+                        },
+                    },
                 }
-            }
+            else:
+                rag_message = {
+                    "timestamp": packet.timestamp,
+                    "system_status": _STATUS_MAP[packet.hazard_level],
+                    "action_command": recommendation.recommendation,
+                    "action_reason": synthesized_narrative,
+                    "rag_data": {
+                        "protocol_id": primary_protocol.source if primary_protocol else "fallback",
+                        "hazard_type": primary_protocol.category if primary_protocol else packet.hazard_level,
+                        # source_document is the actual filename/reference stored in Actian
+                        "source_document": primary_protocol.source if primary_protocol else None,
+                        "source_text": primary_protocol.protocol_text if primary_protocol else recommendation.recommendation,
+                        "actionable_commands": [],
+                    } if primary_protocol or recommendation else None,
+                    "scene_context": {
+                        "entities": [
+                            {
+                                "name": o.label,
+                                "duration_sec": o.duration_in_frame,
+                                "trend": _TREND_MAP.get(o.status, "static"),
+                            }
+                            for o in packet.tracked_objects
+                        ],
+                        "telemetry": {
+                            "temp_f": temp_f,
+                            "trend": "rising" if packet.scores.fire_dominance > 0.1 else "stable",
+                        },
+                        "responders": [],
+                        "synthesized_insights": {
+                            "threat_vector": synthesized_narrative,
+                            "evacuation_radius_ft": 100 if packet.hazard_level == "CRITICAL" else (50 if packet.hazard_level == "HIGH" else None),
+                            "resource_bottleneck": None,
+                            "max_temp_f": temp_f,
+                            "max_aqi": round(packet.scores.smoke_opacity * 500),
+                        },
+                    },
+                }
 
             await self.reflex_publisher.websocket_broadcast(
                 rag_message,
@@ -477,7 +550,7 @@ class RAGOrchestrator:
             logger.info(
                 f"RAG: {packet.device_id} | {total_time:.2f}ms | "
                 f"{len(protocols)} protocols | {len(history)} history | "
-                f"Cache: EMB={'HIT' if cached_vector else 'MISS'} "
+                f"Cache: EMB={'HIT' if cached_protocols else 'MISS'} "
                 f"PROTO={'HIT' if cached_protocols else 'MISS'} "
                 f"SESS={'HIT' if session_history else 'MISS'}"
             )

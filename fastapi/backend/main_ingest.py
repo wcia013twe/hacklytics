@@ -1,12 +1,17 @@
 import asyncio
 import json
 import logging
+import os
 import zmq
 import zmq.asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 
+from cortex import AsyncCortexClient
 from .orchestrator import RAGOrchestrator
+
+ACTIAN_HOST = os.getenv("ACTIAN_HOST", "vectoraidb")
+ACTIAN_PORT = int(os.getenv("ACTIAN_PORT", "50051"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,8 +30,17 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting ingest service...")
 
+    # Connect to Actian VectorAI DB
+    actian_client = AsyncCortexClient(address=f"{ACTIAN_HOST}:{ACTIAN_PORT}")
+    try:
+        await actian_client.connect()
+        logger.info(f"Connected to Actian at {ACTIAN_HOST}:{ACTIAN_PORT}")
+    except Exception as e:
+        logger.warning(f"Actian connection failed (protocols unavailable): {e}")
+        actian_client = None
+
     # Initialize orchestrator
-    orchestrator = RAGOrchestrator(actian_pool=None)  # TODO: Add Actian pool
+    orchestrator = RAGOrchestrator(actian_client=actian_client)
     await orchestrator.startup()
 
     # Start ZMQ listener as background task
@@ -42,9 +56,16 @@ async def lifespan(app: FastAPI):
         zmq_task.cancel()
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(lifespan=lifespan)
 
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 async def zmq_listener():
     """
     Background task: Listen to ZMQ PUB socket from Jetson.
@@ -149,4 +170,4 @@ async def test_inject(packet: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

@@ -9,9 +9,23 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from contracts.models import TelemetryPacket, TrendResult
 
+# Simple enum conversions — not interpretation, just type mapping
+_STATUS_MAP = {
+    "CLEAR": "nominal", "LOW": "nominal",
+    "MODERATE": "warning", "HIGH": "warning",
+    "CRITICAL": "critical",
+}
+_TREND_MAP = {
+    "growing": "expanding", "stable": "static",
+    "stationary": "static", "static": "static", "diminishing": "diminishing",
+}
+
+
 class ReflexPublisherAgent:
     """
     Formats and broadcasts reflex updates to dashboard via WebSocket.
+    Emits WebSocketPayload format so the frontend receives consistent messages
+    from both the reflex path and the RAG cognition path.
     """
 
     def __init__(self):
@@ -19,24 +33,37 @@ class ReflexPublisherAgent:
         self.ws_clients: Dict[str, Set] = {}
 
     async def format_reflex_message(self, packet: TelemetryPacket, trend: TrendResult) -> Dict:
-        """Task 3.1: Format reflex message"""
+        """Task 3.1: Format reflex message as WebSocketPayload."""
+        temp_f = round(72 + packet.scores.fire_dominance * 428)
+        entities = [
+            {
+                "name": o.label,
+                "duration_sec": o.duration_in_frame,
+                "trend": _TREND_MAP.get(o.status, "static"),
+            }
+            for o in packet.tracked_objects
+        ]
         return {
-            "message_type": "reflex_update",
-            "device_id": packet.device_id,
-            "session_id": packet.session_id,
-            "hazard_level": packet.hazard_level,
-            "scores": {
-                "fire_dominance": packet.scores.fire_dominance,
-                "smoke_opacity": packet.scores.smoke_opacity,
-                "proximity_alert": packet.scores.proximity_alert
+            "timestamp": packet.timestamp,
+            "system_status": _STATUS_MAP[packet.hazard_level],
+            "action_command": f"{packet.hazard_level} — Retrieving protocols...",
+            "action_reason": packet.visual_narrative,
+            "rag_data": None,   # populated by cognition path once RAG completes
+            "scene_context": {
+                "entities": entities,
+                "telemetry": {
+                    "temp_f": temp_f,
+                    "trend": "rising" if packet.scores.fire_dominance > 0.1 else "stable",
+                },
+                "responders": [],
+                "synthesized_insights": {
+                    "threat_vector": packet.visual_narrative,
+                    "evacuation_radius_ft": None,
+                    "resource_bottleneck": None,
+                    "max_temp_f": temp_f,
+                    "max_aqi": round(packet.scores.smoke_opacity * 500),
+                },
             },
-            "trend": {
-                "tag": trend.trend_tag,
-                "growth_rate": trend.growth_rate,
-                "sample_count": trend.sample_count,
-                "time_span": trend.time_span
-            },
-            "timestamp": packet.timestamp
         }
 
     async def websocket_broadcast(self, message: Dict, session_id: str, timeout_ms: int = 10) -> Dict:

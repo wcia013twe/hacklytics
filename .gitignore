@@ -5,3 +5,8 @@ runs/
 __pycache__/
 *.pyc
 CLAUDE.md
+./frontend/node_modules
+
+./frontend/venv/
+
+./frontend/venv/bin

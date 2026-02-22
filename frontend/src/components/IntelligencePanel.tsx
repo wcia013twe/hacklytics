@@ -68,8 +68,16 @@ export function IntelligencePanel({ data }: IntelligencePanelProps) {
                     )}
 
                     <div className="mt-2 shrink-0 h-[160px] flex flex-col">
-                        <div className="text-[10px] uppercase text-slate-500 font-bold tracking-[0.2em] mb-2 border-b border-slate-700/50 pb-1 flex items-center shrink-0 mt-2">
-                            <FileText className="w-3 h-3 mr-2 text-slate-400" /> Source Intelligence
+                        <div className="text-[10px] uppercase text-slate-500 font-bold tracking-[0.2em] mb-2 border-b border-slate-700/50 pb-1 flex items-center justify-between shrink-0 mt-2">
+                            <span className="flex items-center">
+                                <FileText className="w-3 h-3 mr-2 text-slate-400" /> Source Intelligence
+                            </span>
+                            {data.source_document && (
+                                <span className="flex items-center gap-1 text-sky-400 border border-sky-800/60 bg-sky-950/40 px-2 py-0.5 font-mono normal-case tracking-normal">
+                                    <FileText className="w-2.5 h-2.5" />
+                                    {data.source_document}
+                                </span>
+                            )}
                         </div>
                         <blockquote className="border border-slate-700/80 p-4 text-slate-300 bg-slate-900/80 leading-relaxed text-base font-medium flex-1 overflow-y-auto hide-scrollbar">
                             "{data.source_text}"

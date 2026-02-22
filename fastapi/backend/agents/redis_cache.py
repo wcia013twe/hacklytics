@@ -61,7 +61,7 @@ class RAGCacheAgent:
         Returns:
             String like "FIRE_MODERATE|SMOKE_DENSE|PROX_NEAR|HIGH"
         """
-        fire_pct = packet.fire_dominance * 100
+        fire_pct = packet.scores.fire_dominance * 100
         fire_bucket = (
             "MINOR" if fire_pct < 10 else
             "MODERATE" if fire_pct < 30 else
@@ -69,7 +69,7 @@ class RAGCacheAgent:
             "CRITICAL"
         )
 
-        smoke_pct = packet.smoke_opacity * 100
+        smoke_pct = packet.scores.smoke_opacity * 100
         smoke_bucket = (
             "CLEAR" if smoke_pct < 20 else
             "HAZY" if smoke_pct < 50 else
@@ -77,7 +77,7 @@ class RAGCacheAgent:
             "BLINDING"
         )
 
-        prox = "NEAR" if packet.proximity_alert else "FAR"
+        prox = "NEAR" if packet.scores.proximity_alert else "FAR"
         hazard = packet.hazard_level
 
         return f"FIRE_{fire_bucket}|SMOKE_{smoke_bucket}|PROX_{prox}|{hazard}"

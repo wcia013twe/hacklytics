@@ -9,6 +9,7 @@ export interface RagData {
     protocol_id: string;
     hazard_type: string;
     source_text: string;
+    source_document?: string;
     actionable_commands?: ActionCommand[];
 }
 
