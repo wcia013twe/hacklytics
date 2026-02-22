@@ -38,6 +38,10 @@ class TelemetryPacket(BaseModel):
     scores: Scores
     tracked_objects: List[TrackedObject]
     visual_narrative: str = Field(..., max_length=200, min_length=1)
+    priority: Optional[Literal["CRITICAL", "CAUTION", "SAFE"]] = Field(
+        None,
+        description="Event priority for temporal buffer retention. Auto-classified if not provided."
+    )
 
     @validator('timestamp')
     def validate_timestamp(cls, v):
@@ -123,3 +127,45 @@ class RAGRecommendation(BaseModel):
     matched_protocol: Optional[str]
     context_summary: str
     synthesis_time_ms: float
+
+class GuardrailResult(BaseModel):
+    """Result from safety guardrail validation.
+
+    Safety guardrails enforce physics-based hard constraints to prevent
+    dangerous recommendations (e.g., water on grease fires).
+    """
+    blocked: bool = Field(..., description="True if recommendation contains dangerous advice")
+    reason: str = Field(..., description="Human-readable explanation of why it was blocked")
+    safe_alternative: str = Field(..., description="Safe alternative recommendation if blocked, empty if passed")
+    hazard_detected: Optional[str] = Field(None, description="Type of hazard detected (grease, electrical, gas, high_temp, pressurized)")
+    dangerous_action: Optional[str] = Field(None, description="Dangerous action that was blocked (water, approach, impact)")
+    latency_ms: float = Field(..., description="Time taken to evaluate guardrails")
+
+class TemporalSynthesisResult(BaseModel):
+    """Result from temporal narrative synthesis.
+
+    The TemporalNarrativeAgent uses Gemini Flash to synthesize 3-5 seconds
+    of buffered frame narratives into coherent temporal stories that capture
+    fire progression patterns and safety-critical trajectories.
+    """
+    synthesized_narrative: str = Field(..., max_length=200, description="LLM-generated temporal story (200 char max)")
+    original_narratives: List[str] = Field(..., description="Individual frame narratives that were synthesized")
+    time_span: float = Field(..., ge=0.0, description="Time range in seconds covered by synthesis")
+    synthesis_time_ms: float = Field(..., ge=0.0, description="Gemini API latency in milliseconds")
+    event_count: int = Field(..., ge=0, description="Number of events synthesized")
+    cache_hit: bool = Field(default=False, description="Was synthesis cached? (future optimization)")
+    fallback_used: bool = Field(default=False, description="Did we fallback to concatenation due to API failure?")
+
+class CacheMetrics(BaseModel):
+    """Cache performance metrics for Redis multi-layer caching.
+
+    Tracks hit/miss rates and latency for the 3-layer cache system:
+    - Layer 1: Embedding cache (narrative → vector)
+    - Layer 2: Protocol cache (vector → protocols)
+    - Layer 3: Session history cache (similarity search)
+    """
+    layer: Literal["embedding", "protocol", "session"] = Field(..., description="Cache layer identifier")
+    hits: int = Field(default=0, ge=0, description="Number of cache hits")
+    misses: int = Field(default=0, ge=0, description="Number of cache misses")
+    hit_rate: float = Field(default=0.0, ge=0.0, le=1.0, description="Cache hit rate (hits / total)")
+    avg_latency_ms: float = Field(default=0.0, ge=0.0, description="Average cache operation latency in milliseconds")

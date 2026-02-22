@@ -1,28 +1,27 @@
 version: '3.8'
 
 services:
-  # Actian Vector Database - Persistent vector storage for protocols and incident history
-  actian:
-    image: actian/vector:latest
-    container_name: hacklytics_actian
+  # Actian VectorAI DB - gRPC-based vector storage for protocols and incident history
+  vectoraidb:
+    image: williamimoh/actian-vectorai-db:1.0b  # Public image from DockerHub
+    platform: linux/amd64   # Required on macOS with Apple Silicon
+    container_name: hacklytics_vectoraidb
     ports:
-      - "5432:5432"
-    environment:
-      VECTOR_DB_NAME: ${ACTIAN_DB:-safety_db}
-      POSTGRES_USER: ${ACTIAN_USER:-vectoruser}
-      POSTGRES_PASSWORD: ${ACTIAN_PASSWORD}  # Required: Set in .env
-      POSTGRES_DB: ${ACTIAN_DB:-safety_db}
+      - "50051:50051"  # gRPC port (NOT PostgreSQL 5432)
     volumes:
-      - actian_data:/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - actian_data:/data  # Collections and logs are persisted under /data
     networks:
       - rag_network
+    restart: unless-stopped
+    stop_grace_period: 2m  # Allow graceful shutdown for data persistence
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${ACTIAN_USER:-vectoruser} -d ${ACTIAN_DB:-safety_db}"]
-      interval: 10s
+      # VectorAI DB doesn't have built-in health probe, use simple connection test
+      # Using nc (netcat) which is more reliable than bash TCP redirect in emulated environments
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 15s
       timeout: 5s
       retries: 5
-    restart: unless-stopped
+      start_period: 30s  # Increased for emulation startup time
     # Resource limits to prevent runaway consumption
     deploy:
       resources:
@@ -42,16 +41,13 @@ services:
     ports:
       - "8001:8001"
     environment:
-      ACTIAN_HOST: actian
-      ACTIAN_PORT: 5432
-      ACTIAN_DB: ${ACTIAN_DB:-safety_db}
-      ACTIAN_USER: ${ACTIAN_USER:-vectoruser}
-      ACTIAN_PASSWORD: ${ACTIAN_PASSWORD}  # Required: Set in .env
+      ACTIAN_HOST: vectoraidb  # Updated service name
+      ACTIAN_PORT: 50051  # gRPC port (changed from 5432)
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
       BATCH_FLUSH_INTERVAL: ${BATCH_FLUSH_INTERVAL:-2.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
-      actian:
+      vectoraidb:
         condition: service_healthy
     networks:
       - rag_network
@@ -121,15 +117,12 @@ services:
       dockerfile: Dockerfile.rag  # Reuses RAG image which has all dependencies
     container_name: hacklytics_test_runner
     environment:
-      ACTIAN_HOST: actian
-      ACTIAN_PORT: 5432
-      ACTIAN_DB: ${ACTIAN_DB:-safety_db}
-      ACTIAN_USER: ${ACTIAN_USER:-vectoruser}
-      ACTIAN_PASSWORD: ${ACTIAN_PASSWORD}  # Required: Set in .env
+      ACTIAN_HOST: vectoraidb  # Updated service name
+      ACTIAN_PORT: 50051  # gRPC port (changed from 5432)
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
       PYTHONPATH: /app
     depends_on:
-      actian:
+      vectoraidb:
         condition: service_healthy
     networks:
       - rag_network

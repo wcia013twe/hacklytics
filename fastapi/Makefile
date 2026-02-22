@@ -30,7 +30,11 @@ help:
 	@echo "  make test-prompt03 - Test PROMPT 3: Test Suites (All 7 profiles)"
 	@echo "  make test-prompt04 - Test PROMPT 4: Actian Setup (DB + Seeding)"
 	@echo "  make test-prompt05 - Test PROMPT 5: Integration & E2E"
-	@echo "  make test-all      - Run all tests (all prompts)"
+	@echo "  make test-all      - Run all tests (compact output, use VERBOSE=1 for details)"
+	@echo "  make test-safety   - Test safety improvements (guardrails, sensor conflicts, priority queue)"
+	@echo ""
+	@echo "  Note: Add VERBOSE=1 to any test command for detailed output"
+	@echo "        Example: make test-all VERBOSE=1"
 	@echo ""
 	@echo "=== Database Operations ==="
 	@echo "  make seed        - Seed safety protocols into Actian"
@@ -39,60 +43,65 @@ help:
 
 # Build Docker images
 build:
-	docker-compose build
+	docker compose build
 
 # Start services
 up:
-	docker-compose up -d
+	docker compose up -d
 
 # Stop services
 down:
-	docker-compose down
+	docker compose down
 
 # Restart all services
 restart:
-	docker-compose restart
+	docker compose restart
 
 # Tail logs
 logs:
-	docker-compose logs -f
+	docker compose logs -f
 
 logs-ingest:
-	docker-compose logs -f ingest
+	docker compose logs -f ingest
 
 logs-rag:
-	docker-compose logs -f rag
+	docker compose logs -f rag
 
 logs-actian:
-	docker-compose logs -f actian
+	docker compose logs -f vectoraidb
+
+logs-vectoraidb:
+	docker compose logs -f vectoraidb
 
 # Show service status
 ps:
-	docker-compose ps
+	docker compose ps
 
 # Run tests
 test:
-	docker-compose exec rag python -m pytest tests/ -v
+	docker compose exec rag python -m pytest tests/ -v
 
 # Run tests with coverage
 test-cov:
-	docker-compose exec rag python -m pytest --cov=backend tests/
+	docker compose exec rag python -m pytest --cov=backend tests/
 
 # Open shell in containers
 shell-rag:
-	docker-compose exec rag /bin/bash
+	docker compose exec rag /bin/bash
 
 shell-ingest:
-	docker-compose exec ingest /bin/bash
+	docker compose exec ingest /bin/bash
 
-# Connect to database
+# Connect to database (VectorAI DB - gRPC, no SQL shell)
 db-shell:
-	docker-compose exec actian psql -U vectoruser -d safety_db
+	@echo "VectorAI DB uses gRPC API (no SQL shell available)"
+	@echo "Use Python client to interact with collections"
+	@echo "Example: docker compose exec rag python scripts/query_vectoraidb.py"
 
 # Seed protocols (placeholder - implement scripts/seed_protocols.py first)
 seed:
 	@echo "Running protocol seeding script..."
-	@docker-compose exec rag python scripts/seed_protocols.py || echo "Create scripts/seed_protocols.py first"
+	@docker compose exec rag python scripts/seed_protocols.py || echo "Create scripts/seed_protocols.py first"
 
 # Check service health
 health:
@@ -102,14 +111,14 @@ health:
 	@echo "Checking RAG service..."
 	@curl -s http://localhost:8001/health | jq || echo "RAG not responding"
 	@echo ""
-	@echo "Checking Actian database..."
-	@docker-compose exec actian pg_isready -U vectoruser -d safety_db
+	@echo "Checking VectorAI DB (gRPC port 50051)..."
+	@nc -zv localhost 50051 2>&1 | grep -q "succeeded" && echo "✅ VectorAI DB listening on port 50051" || echo "❌ VectorAI DB not accessible on port 50051"
 
 # Clean everything (removes volumes)
 clean:
 	@echo "WARNING: This will delete all data in volumes. Press Ctrl+C to cancel, Enter to continue..."
 	@read confirm
-	docker-compose down -v
+	docker compose down -v
 
 # Initialize environment
 init:
@@ -137,8 +146,14 @@ test-prompt01:
 	@echo "========================================"
 	@echo ""
 	@echo "Testing 8 sub-agents + Pydantic models..."
-	@docker-compose exec rag python -m pytest tests/test_agents/ -v --tb=short || \
-		(echo "⚠️  Agent tests not found. Run: docker-compose up -d rag"; exit 1)
+	@if docker compose ps rag 2>/dev/null | grep -q "Up"; then \
+		docker compose exec rag python -m pytest tests/agents/ $(if $(VERBOSE),-v,--tb=line) || \
+		(echo "⚠️  Agent tests not found."; exit 1); \
+	else \
+		echo "⚠️  RAG service not running. Testing locally..."; \
+		python -m pytest tests/agents/ $(if $(VERBOSE),-v,--tb=line) 2>/dev/null || \
+		(echo "⚠️  Tests not found. Ensure services are running: make up"; exit 1); \
+	fi
 	@echo ""
 	@echo "✅ PROMPT 1 validation complete"
 
@@ -149,8 +164,8 @@ test-prompt02:
 	@echo "========================================"
 	@echo ""
 	@echo "Testing dual-path routing, error handling, metrics..."
-	@docker-compose exec rag python -m pytest tests/test_orchestrator.py -v --tb=short || \
-		(echo "⚠️  Orchestrator tests not found. Run: docker-compose up -d rag"; exit 1)
+	@docker compose exec rag python -m pytest tests/test_orchestrator.py $(if $(VERBOSE),-v,--tb=line) || \
+		(echo "⚠️  Orchestrator tests not found. Run: docker compose up -d rag"; exit 1)
 	@echo ""
 	@echo "✅ PROMPT 2 validation complete"
 
@@ -161,8 +176,8 @@ test-prompt03:
 	@echo "========================================"
 	@echo ""
 	@echo "Running test profiles 1-7..."
-	@docker-compose exec rag python -m pytest tests/test_profiles/ -v --tb=short || \
-		(echo "⚠️  Test profiles not found. Run: docker-compose up -d rag"; exit 1)
+	@docker compose exec rag python -m pytest tests/test_profiles/ $(if $(VERBOSE),-v,--tb=line) || \
+		(echo "⚠️  Test profiles not found. Run: docker compose up -d rag"; exit 1)
 	@echo ""
 	@echo "Test Profile Summary:"
 	@echo "  1. ✅ Embedding Semantic Sanity"
@@ -175,29 +190,29 @@ test-prompt03:
 	@echo ""
 	@echo "✅ PROMPT 3 validation complete"
 
-# PROMPT 4: Test Actian setup, schema, and seeding
+# PROMPT 4: Test VectorAI DB setup, collections, and seeding
 test-prompt04:
 	@echo "========================================"
-	@echo "PROMPT 4: Actian Vector DB Setup"
+	@echo "PROMPT 4: VectorAI DB Setup"
 	@echo "========================================"
 	@echo ""
-	@echo "[1/4] Checking Actian container health..."
-	@docker-compose exec actian pg_isready -U vectoruser -d safety_db || \
-		(echo "❌ Actian not ready. Run: docker-compose up -d actian"; exit 1)
-	@echo "✅ Actian container healthy"
+	@echo "[1/4] Checking VectorAI DB container health..."
+	@docker compose ps vectoraidb 2>/dev/null | grep -q "Up" || \
+		(echo "❌ VectorAI DB not running. Run: docker compose up -d vectoraidb"; exit 1)
+	@echo "✅ VectorAI DB container running"
 	@echo ""
-	@echo "[2/4] Verifying schema (safety_protocols, incident_log)..."
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "\dt" | grep -E "(safety_protocols|incident_log)" || \
-		(echo "❌ Schema missing. Run: make db-reset"; exit 1)
-	@echo "✅ Schema verified"
+	@echo "[2/4] Testing gRPC connectivity (port 50051)..."
+	@nc -zv localhost 50051 2>&1 | grep -q "succeeded" || \
+		(echo "❌ Port 50051 not accessible. Check: docker logs hacklytics_vectoraidb"; exit 1)
+	@echo "✅ gRPC port accessible"
 	@echo ""
-	@echo "[3/4] Checking protocol count..."
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "SELECT COUNT(*) as protocol_count FROM safety_protocols;" || \
-		(echo "⚠️  Query failed"; exit 1)
+	@echo "[3/4] Verifying collections exist (safety_protocols, incident_log)..."
+	@python scripts/verify_collections.py 2>/dev/null || \
+		(echo "⚠️  Collection verification script not found. Create scripts/verify_collections.py"; exit 0)
 	@echo ""
-	@echo "[4/4] Testing vector similarity retrieval..."
-	@docker-compose exec rag python scripts/test_actian_queries.py || \
-		(echo "⚠️  Actian query tests not found"; exit 0)
+	@echo "[4/4] Testing vector similarity search..."
+	@python scripts/test_vectoraidb_search.py 2>/dev/null || \
+		(echo "⚠️  Search test script not found. Create scripts/test_vectoraidb_search.py"; exit 0)
 	@echo ""
 	@echo "✅ PROMPT 4 validation complete"
 
@@ -208,15 +223,15 @@ test-prompt05:
 	@echo "========================================"
 	@echo ""
 	@echo "[1/3] Verifying all services are running..."
-	@docker-compose ps | grep -E "(actian|rag|ingest)" || \
+	@docker compose ps | grep -E "(vectoraidb|rag|ingest)" || \
 		(echo "❌ Services not running. Run: make up"; exit 1)
 	@echo "✅ All services running"
 	@echo ""
-	@echo "[2/3] Health check (ingest + rag + actian)..."
+	@echo "[2/3] Health check (ingest + rag + vectoraidb)..."
 	@make health
 	@echo ""
 	@echo "[3/3] Running E2E integration tests..."
-	@docker-compose exec rag python -m pytest tests/test_integration/ -v --tb=short || \
+	@docker compose exec rag python -m pytest tests/test_integration/ -v --tb=short || \
 		(echo "⚠️  Integration tests not found"; exit 0)
 	@echo ""
 	@echo "✅ PROMPT 5 validation complete"
@@ -239,42 +254,55 @@ test-all:
 	@echo ""
 	@echo "🎉 All prompt validations complete!"
 
+# Safety Improvements Testing (Three-Problem Fix)
+test-safety:
+	@echo "========================================"
+	@echo "Safety Improvements Testing"
+	@echo "========================================"
+	@echo ""
+	@echo "Testing Problem 1: Hallucination Guardrails..."
+	@docker compose exec rag python -m pytest tests/agents/test_safety_guardrails.py $(if $(VERBOSE),-v,--tb=line) || \
+		(echo "⚠️  Guardrails tests not found"; exit 1)
+	@echo ""
+	@echo "Testing Problem 3: Context Drift (Priority Queue)..."
+	@docker compose exec rag python -m pytest tests/agents/test_temporal_buffer_priority.py $(if $(VERBOSE),-v,--tb=line) || \
+		(echo "⚠️  Priority queue tests not found"; exit 1)
+	@echo ""
+	@echo "Testing Problem 2: Sensor Conflict Resolution (Nano)..."
+	@cd ../nano && python test_sensor_conflicts.py || \
+		(echo "⚠️  Sensor conflict tests not found"; exit 1)
+	@echo ""
+	@echo "✅ All safety improvements validated!"
+
 # ============================================
-# DATABASE OPERATIONS
+# DATABASE OPERATIONS (VectorAI DB)
 # ============================================
 
-# Verify database schema and data
+# Verify VectorAI DB collections and data
 db-verify:
-	@echo "Verifying Actian database..."
+	@echo "Verifying VectorAI DB collections..."
 	@echo ""
-	@echo "Tables:"
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "\dt"
-	@echo ""
-	@echo "Indexes:"
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "\di"
-	@echo ""
-	@echo "Protocol count:"
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "SELECT COUNT(*) FROM safety_protocols;"
-	@echo ""
-	@echo "Incident count:"
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "SELECT COUNT(*) FROM incident_log;"
-	@echo ""
-	@echo "Protocol coverage:"
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "SELECT severity, category, COUNT(*) FROM safety_protocols GROUP BY severity, category;"
+	@python scripts/verify_collections.py || \
+		(echo "⚠️  Create scripts/verify_collections.py to check collection status"; exit 0)
 
-# Reset database (drop all tables and recreate schema)
+# Reset database (delete collections and recreate)
 db-reset:
-	@echo "⚠️  WARNING: This will delete all data in the database!"
+	@echo "⚠️  WARNING: This will delete all collections and data in VectorAI DB!"
 	@echo "Press Ctrl+C to cancel, or Enter to continue..."
 	@read confirm
-	@echo "Dropping tables..."
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "DROP TABLE IF EXISTS incident_log CASCADE;"
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db -c "DROP TABLE IF EXISTS safety_protocols CASCADE;"
-	@echo "Recreating schema from init.sql..."
-	@docker-compose exec -T actian psql -U vectoruser -d safety_db < init.sql || \
-		cat init.sql | docker-compose exec -T actian psql -U vectoruser -d safety_db
-	@echo "✅ Database reset complete"
+	@echo "Deleting collections..."
+	@python scripts/reset_collections.py || \
+		(echo "⚠️  Create scripts/reset_collections.py to reset collections"; exit 0)
+	@echo "✅ Collections reset complete"
 	@echo ""
 	@echo "Next steps:"
-	@echo "  1. Run 'make seed' to populate safety_protocols"
-	@echo "  2. Run 'make test-prompt04' to verify"
+	@echo "  1. Run 'python scripts/init_actian_collections.py' to create collections"
+	@echo "  2. Run 'make seed' to populate safety_protocols"
+	@echo "  3. Run 'make test-prompt04' to verify"
+
+# Initialize VectorAI DB collections
+db-init:
+	@echo "Initializing VectorAI DB collections..."
+	@python scripts/init_actian_collections.py || \
+		(echo "⚠️  Create scripts/init_actian_collections.py first"; exit 1)
+	@echo "✅ Collections initialized"

@@ -20,6 +20,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
+# Install Actian VectorAI DB Python client
+COPY actiancortex-0.1.0b1-py3-none-any.whl .
+RUN pip install --no-cache-dir --user actiancortex-0.1.0b1-py3-none-any.whl
+
 # Pre-download embedding model to user site-packages
 # This gets baked into the builder layer and copied to runtime
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"

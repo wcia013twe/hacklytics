@@ -1,6 +1,7 @@
 import time
 import asyncio
 import logging
+import os
 from typing import Dict, Optional
 from collections import defaultdict
 
@@ -12,6 +13,9 @@ from agents.protocol_retrieval import ProtocolRetrievalAgent
 from agents.history_retrieval import HistoryRetrievalAgent
 from agents.incident_logger import IncidentLoggerAgent
 from agents.synthesis import SynthesisAgent
+from agents.safety_guardrails import SafetyGuardrailsAgent
+from agents.temporal_narrative import TemporalNarrativeAgent
+from agents.redis_cache import RAGCacheAgent
 from contracts.models import TelemetryPacket
 
 logger = logging.getLogger(__name__)
@@ -80,7 +84,7 @@ class RAGOrchestrator:
     6. Stage 6: Logging
     """
 
-    def __init__(self, actian_pool=None):
+    def __init__(self, actian_pool=None, redis_url: str = None):
         # Initialize all agents
         self.telemetry_agent = TelemetryIngestAgent()
         self.temporal_buffer = TemporalBufferAgent(window_seconds=10)
@@ -90,6 +94,17 @@ class RAGOrchestrator:
         self.history_agent = HistoryRetrievalAgent(actian_pool) if actian_pool else None
         self.incident_logger = IncidentLoggerAgent(actian_pool) if actian_pool else None
         self.synthesis_agent = SynthesisAgent()
+        self.guardrails_agent = SafetyGuardrailsAgent()
+
+        # NEW: Temporal narrative synthesis + Redis caching
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.temporal_narrative_agent = TemporalNarrativeAgent(
+            api_key=gemini_api_key,
+            model_name=os.getenv("GEMINI_MODEL", "gemini-1.5-flash-002")
+        ) if gemini_api_key else None
+
+        redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.cache_agent = RAGCacheAgent(redis_url=redis_url)
 
         # State management
         self.metrics = OrchestratorMetrics()
@@ -251,14 +266,21 @@ class RAGOrchestrator:
 
     async def stage_3_cognition(self, packet: TelemetryPacket, trend):
         """
-        Stage 3: Cognition path execution (async, <2s target)
+        Stage 3: Cognition path with READ/WRITE separation (async, <2s target)
 
-        Steps:
-        1. Embed visual narrative
-        2. Retrieve protocols + history (parallel)
-        3. Log incident (fire-and-forget)
-        4. Synthesize recommendation
-        5. Broadcast to WebSocket
+        ╔═══════════════════════════════════════════════════════════════╗
+        ║ READ PATH (Action - Fast)                                    ║
+        ║ Goal: "What should I do RIGHT NOW?"                          ║
+        ║ Strategy: Check cache first, avoid embedding if possible     ║
+        ║ Latency: 2-200ms depending on cache hits                     ║
+        ╚═══════════════════════════════════════════════════════════════╝
+
+        ╔═══════════════════════════════════════════════════════════════╗
+        ║ WRITE PATH (Memory - Always runs in background)             ║
+        ║ Goal: "Remember this moment forever"                         ║
+        ║ Strategy: ALWAYS embed + store in Actian for timeline       ║
+        ║ Latency: 200ms+ but invisible (fire-and-forget)             ║
+        ╚═══════════════════════════════════════════════════════════════╝
 
         This is fire-and-forget: exceptions are logged but don't propagate.
         """
@@ -266,54 +288,106 @@ class RAGOrchestrator:
         request_id = f"{packet.device_id}_{packet.timestamp}"
 
         try:
-            # Task 4.1: Embed narrative
-            embedding = await self.embedding_agent.embed_text(
-                text=packet.visual_narrative,
-                request_id=request_id
-            )
+            # ═════════════════════════════════════════════════════════
+            # PHASE 1: TEMPORAL NARRATIVE SYNTHESIS (100-150ms)
+            # ═════════════════════════════════════════════════════════
+            synthesized_narrative = packet.visual_narrative  # Default fallback
+            temporal_synthesis = None
 
-            # Tasks 5.2 & 6.2: Parallel retrieval (total ~200ms, not 400ms)
-            protocol_task = self.protocol_agent.execute_vector_search(
-                vector=embedding.vector,
-                severity=["HIGH", "CRITICAL"],
-                top_k=3,
-                timeout=200
-            ) if self.protocol_agent else self._mock_protocols()
+            if self.temporal_narrative_agent:
+                try:
+                    # Get buffered packets for this device
+                    buffer_packets = list(self.temporal_buffer.buffers.get(packet.device_id, []))
 
-            history_task = self.history_agent.execute_history_search(
-                vector=embedding.vector,
-                session_id=packet.session_id,
-                similarity_threshold=0.70,
-                top_k=5,
-                timeout=200
-            ) if self.history_agent else self._mock_history()
+                    if len(buffer_packets) >= 2:
+                        temporal_synthesis = await self.temporal_narrative_agent.synthesize_temporal_narrative(
+                            buffer_packets=buffer_packets,
+                            lookback_seconds=float(os.getenv("TEMPORAL_LOOKBACK_SECONDS", "3.0"))
+                        )
+                        synthesized_narrative = temporal_synthesis.synthesized_narrative
+                        logger.info(f"📖 Temporal synthesis: {len(buffer_packets)} events → {len(synthesized_narrative)} chars")
+                except Exception as e:
+                    logger.warning(f"Temporal synthesis failed, using raw narrative: {e}")
 
-            protocols, history = await asyncio.gather(
-                protocol_task,
-                history_task,
-                return_exceptions=True
-            )
+            # ═════════════════════════════════════════════════════════
+            # READ PATH: GET PROTOCOLS (Semantic Key Cache - YOLO Buckets)
+            # ═════════════════════════════════════════════════════════
 
-            # Handle partial failures
-            if isinstance(protocols, Exception):
-                logger.error(f"Protocol retrieval failed: {protocols}")
-                protocols = []
-                self.metrics.increment("rag.protocol_failures")
+            # Step 1: Try semantic protocol cache FIRST (uses YOLO fire/smoke buckets)
+            cached_protocols = await self.cache_agent.get_protocols_by_semantic_key(packet)
 
-            if isinstance(history, Exception):
-                logger.error(f"History retrieval failed: {history}")
-                history = []
-                self.metrics.increment("rag.history_failures")
+            if cached_protocols:
+                logger.info(f"✅ [CACHE HIT] Semantic protocols: {self.cache_agent.get_semantic_cache_key(packet)} (saved ~90ms - no embedding!)")
+                protocols = cached_protocols
+                vector = None  # Don't need vector yet on cache hit
+                embedding_time_ms = 0.0
+                self.metrics.increment("cache.semantic_hits")
+            else:
+                logger.info(f"❌ [CACHE MISS] Semantic key: {self.cache_agent.get_semantic_cache_key(packet)} - generating embedding + querying Actian...")
 
-            # Task 7.2: Log incident (fire-and-forget, batched)
-            if self.incident_logger:
-                asyncio.create_task(
-                    self.incident_logger.write_to_actian(
-                        vector=embedding.vector,
-                        packet=packet,
-                        trend=trend
-                    )
+                # Cache miss - must compute embedding
+                embedding = await self.embedding_agent.embed_text(
+                    text=synthesized_narrative,
+                    request_id=request_id
                 )
+                vector = embedding.vector
+                embedding_time_ms = embedding.embedding_time_ms
+
+                # Query Actian with vector
+                severity_filter = ["HIGH", "CRITICAL"] if packet.hazard_level in ["HIGH", "CRITICAL"] else ["CAUTION", "HIGH", "CRITICAL"]
+                protocols = await self.protocol_agent.execute_vector_search(
+                    vector=vector,
+                    severity=severity_filter,
+                    top_k=3,
+                    timeout=200
+                ) if self.protocol_agent else []
+
+                # Cache protocols under semantic key
+                await self.cache_agent.cache_protocols_by_semantic_key(
+                    packet,
+                    protocols,
+                    ttl=300
+                )
+                self.metrics.increment("cache.semantic_misses")
+
+            # Step 2: Get session history from Redis cache
+            # NOTE: Need vector for similarity search - generate if not already computed
+            if vector is None:
+                # Cache hit path - need to generate vector for history search
+                embedding = await self.embedding_agent.embed_text(
+                    text=synthesized_narrative,
+                    request_id=request_id
+                )
+                vector = embedding.vector
+                embedding_time_ms = embedding.embedding_time_ms
+
+            session_history = await self.cache_agent.get_session_history(
+                session_id=packet.session_id,
+                device_id=packet.device_id,
+                current_vector=vector,
+                similarity_threshold=0.70,
+                max_results=5
+            )
+
+            if session_history:
+                logger.info(f"✅ [READ PATH] Session history cache HIT ({len(session_history)} incidents)")
+                history = session_history
+                self.metrics.increment("cache.session_hits")
+            else:
+                logger.info(f"❌ [READ PATH] Session history cache MISS - querying Actian...")
+                # Fallback to Actian DB
+                history = await self.history_agent.execute_history_search(
+                    vector=vector,
+                    session_id=packet.session_id,
+                    similarity_threshold=0.70,
+                    top_k=5,
+                    timeout=200
+                ) if self.history_agent else []
+                self.metrics.increment("cache.session_misses")
+
+            # ═════════════════════════════════════════════════════════
+            # SYNTHESIS & SAFETY GUARDRAILS
+            # ═════════════════════════════════════════════════════════
 
             # Task 8.2: Synthesize recommendation
             recommendation = await self.synthesis_agent.render_template(
@@ -327,7 +401,49 @@ class RAGOrchestrator:
                 }
             )
 
-            # Broadcast RAG recommendation to dashboard
+            # Task 8.3: Apply safety guardrails BEFORE broadcasting
+            thermal_reading = None
+            for obj in packet.tracked_objects:
+                if obj.label.lower() in ["thermal", "temperature", "heat"]:
+                    try:
+                        thermal_reading = float(obj.status) if obj.status.replace('.', '').isdigit() else None
+                    except (ValueError, AttributeError):
+                        pass
+
+            recommendation = await self.guardrails_agent.apply_guardrails(
+                recommendation=recommendation,
+                packet=packet,
+                thermal_reading=thermal_reading
+            )
+
+            # Track guardrail metrics
+            guardrail_metrics = self.guardrails_agent.get_metrics()
+            if "guardrail_blocks_total" in guardrail_metrics:
+                self.metrics.increment("guardrail.blocks", guardrail_metrics["guardrail_blocks_total"])
+            if "guardrail_pass_total" in guardrail_metrics:
+                self.metrics.increment("guardrail.pass", guardrail_metrics["guardrail_pass_total"])
+
+            # ═════════════════════════════════════════════════════════
+            # WRITE PATH: SAVE TO MEMORY (Fire-and-Forget)
+            # ═════════════════════════════════════════════════════════
+
+            # Launch background task to write incident to Actian
+            # This ALWAYS runs embedding to ensure vector DB has complete history
+            asyncio.create_task(
+                self._write_incident_to_memory(
+                    packet=packet,
+                    trend=trend,
+                    synthesized_narrative=synthesized_narrative,
+                    vector=vector  # May be cached or freshly computed
+                )
+            )
+
+            logger.info(f"🧠 [WRITE PATH] Incident memory write queued (background)")
+
+            # ═════════════════════════════════════════════════════════
+            # BROADCAST TO DASHBOARD
+            # ═════════════════════════════════════════════════════════
+
             rag_message = {
                 "message_type": "rag_recommendation",
                 "device_id": packet.device_id,
@@ -335,7 +451,12 @@ class RAGOrchestrator:
                 "matched_protocol": recommendation.matched_protocol,
                 "processing_time_ms": (time.perf_counter() - start) * 1000,
                 "protocols_count": len(protocols),
-                "history_count": len(history)
+                "history_count": len(history),
+                "cache_stats": {
+                    "embedding_cached": cached_vector is not None,
+                    "protocols_cached": cached_protocols is not None,
+                    "session_cached": len(session_history) > 0 if session_history else False
+                }
             }
 
             await self.reflex_publisher.websocket_broadcast(
@@ -350,7 +471,10 @@ class RAGOrchestrator:
 
             logger.info(
                 f"RAG: {packet.device_id} | {total_time:.2f}ms | "
-                f"{len(protocols)} protocols | {len(history)} history"
+                f"{len(protocols)} protocols | {len(history)} history | "
+                f"Cache: EMB={'HIT' if cached_vector else 'MISS'} "
+                f"PROTO={'HIT' if cached_protocols else 'MISS'} "
+                f"SESS={'HIT' if session_history else 'MISS'}"
             )
 
             if total_time > 2000:
@@ -360,6 +484,64 @@ class RAGOrchestrator:
             logger.error(f"Cognition path failed: {e}", exc_info=True)
             self.metrics.increment("rag.failures")
             self.rag_health.mark_failure()
+
+    async def _write_incident_to_memory(
+        self,
+        packet: TelemetryPacket,
+        trend,
+        synthesized_narrative: str,
+        vector: list
+    ):
+        """
+        ╔═══════════════════════════════════════════════════════════════╗
+        ║ WRITE PATH (Memory - Background Task)                       ║
+        ║ Goal: Build complete mission timeline in Actian Vector DB   ║
+        ╚═══════════════════════════════════════════════════════════════╝
+
+        This method runs in the background (fire-and-forget) and:
+        1. Writes incident to Redis session history cache (write-through)
+        2. Writes incident to Actian Vector DB for permanent storage
+
+        Critical: This ALWAYS runs to ensure the mission log is complete,
+        even if the READ path got a cache hit and skipped embedding.
+
+        Args:
+            packet: Current telemetry packet
+            trend: Fire growth trend
+            synthesized_narrative: LLM-synthesized temporal narrative
+            vector: 384-dim embedding vector (may be cached or fresh)
+        """
+        write_start = time.perf_counter()
+
+        try:
+            # Step 1: Write-through to Redis session history cache
+            await self.cache_agent.append_session_history(
+                session_id=packet.session_id,
+                device_id=packet.device_id,
+                narrative=synthesized_narrative,
+                vector=vector,
+                timestamp=packet.timestamp,
+                trend=trend.trend_tag,
+                hazard_level=packet.hazard_level
+            )
+
+            # Step 2: Write to Actian Vector DB for permanent storage
+            if self.incident_logger:
+                await self.incident_logger.write_to_actian(
+                    vector=vector,
+                    packet=packet,
+                    trend=trend
+                )
+
+            write_time = (time.perf_counter() - write_start) * 1000
+            logger.info(
+                f"🧠 [WRITE PATH] Memory stored: {packet.device_id} | "
+                f"{write_time:.2f}ms | Redis + Actian"
+            )
+
+        except Exception as e:
+            logger.error(f"[WRITE PATH] Memory write failed: {e}", exc_info=True)
+            # Don't propagate - this is fire-and-forget
 
     def should_invoke_rag(self, packet: TelemetryPacket, reflex_result: Dict) -> bool:
         """

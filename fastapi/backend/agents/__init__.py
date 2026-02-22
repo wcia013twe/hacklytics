@@ -7,6 +7,9 @@ from .protocol_retrieval import ProtocolRetrievalAgent
 from .history_retrieval import HistoryRetrievalAgent
 from .incident_logger import IncidentLoggerAgent
 from .synthesis import SynthesisAgent
+from .safety_guardrails import SafetyGuardrailsAgent
+from .temporal_narrative import TemporalNarrativeAgent
+from .redis_cache import RAGCacheAgent
 
 __all__ = [
     "TelemetryIngestAgent",
@@ -16,5 +19,8 @@ __all__ = [
     "ProtocolRetrievalAgent",
     "HistoryRetrievalAgent",
     "IncidentLoggerAgent",
-    "SynthesisAgent"
+    "SynthesisAgent",
+    "SafetyGuardrailsAgent",
+    "TemporalNarrativeAgent",
+    "RAGCacheAgent"
 ]

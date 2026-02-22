@@ -11,15 +11,28 @@ class ReflexEngine:
         self.last_sent_state = {}
         self.last_sent_time = 0
         self.session = requests.Session()
-        
+
         # --- HARDWARE THRESHOLDS ---
         self.TEMP_WARN = 50.0  # °C (Warning)
         self.TEMP_CRIT = 80.0  # °C (Critical)
+
+        # --- THERMAL OVERRIDE THRESHOLDS (PROBLEM 2: Split-Brain Resolution) ---
+        self.TEMP_DANGER_THRESHOLD = 60.0   # °C - Force minimum DANGER level
+        self.TEMP_CRITICAL_THRESHOLD = 100.0  # °C - Force CRITICAL override
+        self.TEMP_SAFE_THRESHOLD = 30.0     # °C - Below this, thermal likely safe
 
     def process_frame(self, frame_shape, yolov8_results, thermal_max_c, smoke_detected):
         """
         Decides if the current situation warrants an alert.
         Enhanced with spatial heuristics for advanced scene understanding.
+
+        PROBLEM 2 IMPLEMENTATION: Thermal-Override "Trump Card" Logic
+        - Thermal sensor takes priority over visual when temperatures exceed thresholds
+        - Prevents false negatives when smoke is transparent to RGB camera
+        - Logs sensor conflicts for debugging and safety analysis
+
+        Returns:
+            current_state dict (for testing purposes)
         """
         # 1. Reset State
         current_state = {
@@ -34,7 +47,11 @@ class ReflexEngine:
                 "proximity": 0.0,
                 "obstruction": 0.0,
                 "dominance": 0.0
-            }
+            },
+            # PROBLEM 2: Sensor conflict tracking
+            "sensor_conflict": False,
+            "override_reason": None,
+            "thermal_override_active": False
         }
 
         # 2. Extract All Detections (for spatial analysis)
@@ -89,32 +106,110 @@ class ReflexEngine:
             current_state["fire_intensity"] = fire_visual_intensity
             current_state["visual_narrative"] = "No objects detected in scene."
 
-        # 4. FUSION LOGIC (The "Smart Dispatcher" Logic)
-        # Enhanced with spatial heuristics for more nuanced hazard assessment
-        is_hot = thermal_max_c > self.TEMP_WARN
+        # 4. FUSION LOGIC WITH THERMAL-OVERRIDE HIERARCHY (PROBLEM 2)
+        # ================================================================
+        # CRITICAL SAFETY RULE: Thermal > Visual
+        # If thermal reads danger, visual "safe" signals are IGNORED
+        # ================================================================
+
+        # Extract sensor states
         is_visual_fire = current_state["fire_intensity"] > 0.1
         is_proximity_critical = current_state["scores"]["proximity"] > 0.7
         is_path_blocked = current_state["scores"]["obstruction"] > 0.3
 
-        if is_hot and is_visual_fire:
-            current_state["hazard_level"] = "CRITICAL_CONFIRMED"
+        # Determine visual assessment (what camera thinks)
+        if is_visual_fire:
+            visual_assessment = "FIRE_DETECTED"
+        elif current_state["fire_intensity"] > 0.0 or len(current_state["hazards_detected"]) > 0:
+            visual_assessment = "HAZARD_DETECTED"
+        else:
+            visual_assessment = "SAFE"
 
-            # Upgrade to higher alert if proximity or obstruction is critical
-            if is_proximity_critical:
-                current_state["hazard_level"] = "CRITICAL_PROXIMITY"  # NEW: Explosion/rescue risk
-            elif is_path_blocked:
-                current_state["hazard_level"] = "CRITICAL_TRAPPED"    # NEW: Escape route blocked
+        # ================================================================
+        # THERMAL OVERRIDE HIERARCHY (Trump Card Logic)
+        # ================================================================
 
-        elif is_hot and not is_visual_fire:
-            current_state["hazard_level"] = "HIDDEN_HEAT_SOURCE"
-        elif not is_hot and is_visual_fire:
-            current_state["hazard_level"] = "FALSE_ALARM_VISUAL"
-        elif smoke_detected:
-            current_state["hazard_level"] = "SMOKE_DANGER"
+        # TIER 1: EXTREME HEAT (>100°C) - FORCE CRITICAL
+        if thermal_max_c > self.TEMP_CRITICAL_THRESHOLD:
+            current_state["hazard_level"] = "THERMAL_OVERRIDE_CRITICAL"
+            current_state["thermal_override_active"] = True
+            current_state["override_reason"] = f"Extreme thermal reading: {thermal_max_c:.1f}C (>100C threshold)"
+
+            # Check for sensor conflict
+            if visual_assessment == "SAFE":
+                current_state["sensor_conflict"] = True
+                conflict_msg = f"SENSOR CONFLICT: Visual={visual_assessment}, Thermal={thermal_max_c:.0f}C -> OVERRIDING to CRITICAL"
+                print(f"[THERMAL OVERRIDE] {conflict_msg}")
+                current_state["override_reason"] += " | Visual reported safe but thermal critical"
+
+            # Console warning
+            print(f"THERMAL OVERRIDE: {thermal_max_c:.1f}C detected (CRITICAL)")
+
+        # TIER 2: HIGH HEAT (60-100°C) - FORCE MINIMUM DANGER
+        elif thermal_max_c > self.TEMP_DANGER_THRESHOLD:
+            # Initial assessment: at least DANGER level
+            if is_visual_fire:
+                # Both sensors agree - confirmed threat
+                current_state["hazard_level"] = "CRITICAL_CONFIRMED"
+
+                # Spatial context escalation
+                if is_proximity_critical:
+                    current_state["hazard_level"] = "CRITICAL_PROXIMITY"
+                elif is_path_blocked:
+                    current_state["hazard_level"] = "CRITICAL_TRAPPED"
+            else:
+                # Thermal shows heat but visual doesn't see fire
+                current_state["hazard_level"] = "HIDDEN_HEAT_SOURCE"
+                current_state["thermal_override_active"] = True
+                current_state["sensor_conflict"] = True
+                current_state["override_reason"] = f"Thermal: {thermal_max_c:.1f}C, Visual: No fire detected"
+
+                conflict_msg = f"SENSOR CONFLICT: Visual=SAFE, Thermal={thermal_max_c:.0f}C -> HIDDEN_HEAT_SOURCE"
+                print(f"[THERMAL OVERRIDE] {conflict_msg}")
+
+        # TIER 3: WARM (50-60°C) - WARNING RANGE
+        elif thermal_max_c > self.TEMP_WARN:
+            if is_visual_fire:
+                # Both sensors agree on threat
+                current_state["hazard_level"] = "CRITICAL_CONFIRMED"
+
+                # Spatial escalation
+                if is_proximity_critical:
+                    current_state["hazard_level"] = "CRITICAL_PROXIMITY"
+                elif is_path_blocked:
+                    current_state["hazard_level"] = "CRITICAL_TRAPPED"
+            else:
+                # Warm but no visual confirmation
+                current_state["hazard_level"] = "THERMAL_WARNING"
+                current_state["override_reason"] = f"Elevated temperature: {thermal_max_c:.1f}C"
+
+        # TIER 4: NORMAL THERMAL (<50°C) - Visual takes lead
+        else:
+            if is_visual_fire and thermal_max_c < self.TEMP_SAFE_THRESHOLD:
+                # Visual says fire but thermal is cool - likely false positive
+                current_state["hazard_level"] = "FALSE_ALARM_VISUAL"
+                current_state["sensor_conflict"] = True
+                current_state["override_reason"] = f"Visual fire detected but thermal only {thermal_max_c:.1f}C"
+
+                conflict_msg = f"SENSOR CONFLICT: Visual=FIRE, Thermal={thermal_max_c:.0f}C -> FALSE_ALARM_VISUAL"
+                print(f"[CONFLICT DETECTED] {conflict_msg}")
+
+            elif is_visual_fire:
+                # Visual fire with mild heat - possible early stage fire
+                current_state["hazard_level"] = "VISUAL_FIRE_UNCONFIRMED"
+                current_state["override_reason"] = f"Visual fire present, thermal: {thermal_max_c:.1f}C"
+
+            elif smoke_detected:
+                current_state["hazard_level"] = "SMOKE_DANGER"
+
+            # Otherwise, remains SAFE
 
         # 5. Transmit if meaningful change occurred
         if self._should_send_update(current_state):
             self._transmit(current_state)
+
+        # Return state for testing purposes
+        return current_state
 
     def _should_send_update(self, current):
         last = self.last_sent_state
@@ -141,11 +236,24 @@ class ReflexEngine:
              self.last_sent_state = data
              self.last_sent_time = time.time()
 
-             # Enhanced console output with spatial narrative
+             # Enhanced console output with spatial narrative and thermal override status
              narrative_preview = data.get('visual_narrative', '')[:60]  # First 60 chars
              scores = data.get('scores', {})
-             print(f"📡 SENT: {data['hazard_level']} | Temp {data['temp_max']:.1f}C")
+
+             # PROBLEM 2: Enhanced display for thermal overrides
+             status_icon = "SENT"
+             if data.get('thermal_override_active'):
+                 status_icon = "THERMAL OVERRIDE"
+             elif data.get('sensor_conflict'):
+                 status_icon = "CONFLICT"
+
+             print(f"[{status_icon}] {data['hazard_level']} | Temp {data['temp_max']:.1f}C")
              print(f"   Scores: P={scores.get('proximity', 0):.2f} O={scores.get('obstruction', 0):.2f} D={scores.get('dominance', 0):.2f}")
+
+             # Display override reason if present
+             if data.get('override_reason'):
+                 print(f"   Override: {data['override_reason']}")
+
              if narrative_preview:
                  print(f"   Scene: {narrative_preview}...")
         except:

@@ -15,6 +15,12 @@ sentence-transformers>=2.2.0
 torch>=2.0.0
 numpy>=1.24.0
 
+# Temporal LLM (Gemini Flash for narrative synthesis)
+google-generativeai>=0.3.0
+
+# Redis Caching (multi-layer cache for RAG pipeline)
+redis>=5.0.0
+
 # ZeroMQ Transport Layer
 pyzmq>=25.0.0
 
