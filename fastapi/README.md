@@ -14,6 +14,25 @@ make setup && make seed && make test-all
 
 ---
 
+## Multi-Location Demo (Optional)
+
+Run mock multi-location fire response demo:
+
+```bash
+# Terminal 1: Backend + frontend (as above)
+cd fastapi && docker-compose up -d
+cd frontend && npm run dev
+
+# Terminal 2: Demo layer
+cd fastapi/scripts
+export GEMINI_API_KEY=your-key-here  # Optional
+./demo_launcher.sh
+```
+
+See [scripts/README.md](scripts/README.md) for details.
+
+---
+
 ## Architecture
 
 ```
