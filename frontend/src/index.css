@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+@theme {
+  --color-slate-950: #020617;
+  --color-slate-900: #0f172a;
+  --color-slate-800: #1e293b;
+  --color-slate-700: #334155;
+  --color-slate-400: #94a3b8;
+  --color-slate-200: #e2e8f0;
+  --color-blue-900: #1e3a8a;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-200 antialiased overflow-hidden selection:bg-blue-500/30;
+    background-image: radial-gradient(circle at 50% -20%, #0f172a 0%, #020617 80%);
+  }
+}
+
+/* Custom utility to hide scrollbar but maintain scrollability */
+@utility hide-scrollbar {
+  -ms-overflow-style: none;
+  /* IE and Edge */
+  scrollbar-width: none;
+
+  /* Firefox */
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
