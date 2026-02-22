@@ -1,10 +1,19 @@
 import { Map, Scan, Wind } from 'lucide-react';
-import type { SceneContext, SystemStatus } from '../types/websocket';
+import type { SceneContext, SystemStatus, Responder } from '../types/websocket';
 
 interface OpsMapProps {
     sceneData?: SceneContext;
     systemStatus?: SystemStatus;
 }
+
+// Map location names to relative positions (x, y as percentages from center)
+const LOCATION_POSITIONS: Record<string, { x: number; y: number }> = {
+    'Kitchen': { x: 120, y: -80 },           // Upper-right
+    'Hallway': { x: -100, y: -60 },          // Upper-left
+    'Living Room': { x: -60, y: 100 },       // Lower-left
+    'Safe Zone': { x: 0, y: -180 },          // Far north (evacuated)
+    'Perimeter': { x: 160, y: 60 }           // Far right (outer ring)
+};
 
 export function OpsMap({ sceneData, systemStatus = 'nominal' }: OpsMapProps) {
     // Determine the hazard radius based on evacuation config or fallback to AQI for demonstration
@@ -13,6 +22,33 @@ export function OpsMap({ sceneData, systemStatus = 'nominal' }: OpsMapProps) {
         : (sceneData?.synthesized_insights?.max_aqi || 0) * 0.5;
 
     const hasHazard = hazardRadius > 20;
+
+    // Get responder position based on location field (with fallback)
+    const getResponderPosition = (responder: Responder): { x: number; y: number } => {
+        // Try to extract location from responder data (future: add explicit location field)
+        // For now, use ID-based positioning as fallback
+        const fallbackPositions: Record<string, { x: number; y: number }> = {
+            'R-01': { x: 120, y: -80 },   // Kitchen
+            'R-02': { x: -100, y: -60 },  // Hallway
+            'R-03': { x: 80, y: -100 },   // Kitchen support
+            'R-04': { x: -60, y: 100 },   // Living room
+            'R-05': { x: 0, y: 120 },     // Living room support
+            'R-06': { x: 160, y: 60 }     // Perimeter
+        };
+        return fallbackPositions[responder.id] || { x: 0, y: 0 };
+    };
+
+    // Get color based on responder status
+    const getResponderColor = (status: string): string => {
+        switch (status) {
+            case 'critical': return 'bg-rose-500';
+            case 'warning': return 'bg-amber-500';
+            case 'nominal': return 'bg-sky-500';
+            default: return 'bg-slate-500';
+        }
+    };
+
+    const responders = sceneData?.responders || [];
 
     return (
         <div className="h-full w-full bg-[#0A1128]/80 backdrop-blur-md border border-white/10 flex flex-col relative overflow-hidden">
@@ -66,19 +102,51 @@ export function OpsMap({ sceneData, systemStatus = 'nominal' }: OpsMapProps) {
                     </div>
                 )}
 
-                {/* Central Rescue-1 Unit Dot */}
+                {/* Central Rescue-1 Unit Dot (Always Green) */}
                 <div className="relative z-20 flex flex-col items-center justify-center">
                     <div className="relative">
                         {/* Ping animation behind the dot */}
-                        <div className={`absolute -inset-2 rounded-full animate-ping opacity-75 ${systemStatus === 'critical' ? 'bg-rose-500' : 'bg-sky-400'}`} />
-                        {/* Actual Dot */}
-                        <div className={`w-4 h-4 rounded-full border-2 border-white shadow-[0_0_15px_rgba(255,255,255,0.8)] z-10 relative ${systemStatus === 'critical' ? 'bg-rose-500' : 'bg-sky-500'}`} />
+                        <div className="absolute -inset-2 rounded-full animate-ping opacity-75 bg-green-500" />
+                        {/* Actual Dot - ALWAYS GREEN */}
+                        <div className="w-4 h-4 rounded-full border-2 border-white shadow-[0_0_15px_rgba(34,197,94,0.8)] z-10 relative bg-green-500" />
                     </div>
                     {/* Unit Label */}
                     <div className="absolute mt-8 whitespace-nowrap bg-black/60 border border-slate-700 px-2 py-0.5 pointer-events-none">
-                        <span className="text-[10px] font-mono text-sky-400 font-bold block text-center">RESCUE-1</span>
+                        <span className="text-[10px] font-mono text-green-400 font-bold block text-center">RESCUE-1</span>
                     </div>
                 </div>
+
+                {/* Responder Dots (Scattered Around Center) */}
+                {responders.map((responder) => {
+                    const pos = getResponderPosition(responder);
+                    const colorClass = getResponderColor(responder.status);
+                    const showPing = responder.status === 'critical' || responder.status === 'warning';
+
+                    return (
+                        <div
+                            key={responder.id}
+                            className="absolute z-20 flex flex-col items-center justify-center transition-all duration-1000 ease-in-out"
+                            style={{
+                                transform: `translate(${pos.x}px, ${pos.y}px)`
+                            }}
+                        >
+                            <div className="relative">
+                                {/* Ping animation for warning/critical */}
+                                {showPing && (
+                                    <div className={`absolute -inset-2 rounded-full animate-ping opacity-75 ${colorClass}`} />
+                                )}
+                                {/* Responder Dot */}
+                                <div className={`w-3 h-3 rounded-full border-2 border-white shadow-[0_0_10px_rgba(255,255,255,0.6)] z-10 relative ${colorClass}`} />
+                            </div>
+                            {/* Responder Label */}
+                            <div className="absolute mt-6 whitespace-nowrap bg-black/70 border border-slate-700 px-1.5 py-0.5 pointer-events-none">
+                                <span className="text-[9px] font-mono text-slate-300 font-bold block text-center">
+                                    {responder.id}
+                                </span>
+                            </div>
+                        </div>
+                    );
+                })}
             </div>
 
             {/* Map Legend Footer */}
