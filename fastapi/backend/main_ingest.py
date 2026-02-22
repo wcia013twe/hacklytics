@@ -29,7 +29,9 @@ async def lifespan(app: FastAPI):
     logger.info("Starting ingest service...")
 
     # Initialize orchestrator
-    orchestrator = RAGOrchestrator(actian_pool=None)  # TODO: Add Actian pool
+    # NOTE: Ingest service doesn't directly access the database
+    # It forwards packets to the RAG service which handles DB operations
+    orchestrator = RAGOrchestrator(actian_client=None)  # No direct DB access needed
     await orchestrator.startup()
 
     # Start ZMQ listener as background task
@@ -163,6 +165,38 @@ async def test_inject(packet: dict):
     raw_json = json.dumps(packet)
     result = await orchestrator.process_packet(raw_json)
     return result
+
+
+@app.get("/api/metrics")
+async def get_api_metrics():
+    """
+    REST API alternative to WebSocket: Get current metrics and state.
+
+    Returns the latest telemetry data for dashboard polling.
+    """
+    if not orchestrator:
+        return {"error": "Orchestrator not initialized"}
+
+    # Get latest buffer state
+    latest_data = {}
+    for device_id, buffer in orchestrator.temporal_buffer.buffers.items():
+        if buffer:
+            latest_packet = buffer[-1]  # Most recent packet
+            latest_data[device_id] = {
+                "timestamp": latest_packet.get("timestamp"),
+                "fire_dominance": latest_packet.get("scores", {}).get("fire_dominance"),
+                "smoke_opacity": latest_packet.get("scores", {}).get("smoke_opacity"),
+                "proximity_alert": latest_packet.get("scores", {}).get("proximity_alert"),
+                "hazard_level": latest_packet.get("hazard_level"),
+                "buffer_size": len(buffer)
+            }
+
+    return {
+        "status": "ok",
+        "metrics": orchestrator.metrics.summary(),
+        "rag_healthy": orchestrator.rag_health.is_healthy(),
+        "latest_data": latest_data
+    }
 
 
 if __name__ == "__main__":

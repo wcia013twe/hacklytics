@@ -30,9 +30,11 @@ pyzmq>=25.0.0
 # WebSocket Support (for dashboard)
 websockets>=12.0
 
-# Database - Actian Vector DB
-# psycopg2-binary>=2.9.0  # PostgreSQL driver (Actian Vector compatible)
-asyncpg>=0.29.0  # Async PostgreSQL driver
+# Database - PostgreSQL with pgvector
+asyncpg>=0.29.0  # Async PostgreSQL driver for pgvector
+
+# COMMENTED OUT: Actian Vector DB SDK (replaced with pgvector)
+# actian-cortex-sdk  # Actian VectorAI DB Cortex gRPC SDK
 
 # Vector Operations
 scikit-learn>=1.3.0  # For cosine similarity utilities if needed

@@ -9,12 +9,16 @@ logger = logging.getLogger(__name__)
 
 class HistoryRetrievalAgent:
     """
-    Queries Actian VectorAI DB for similar past incidents in current session.
-    Uses Cortex gRPC SDK (AsyncCortexClient).
+    Queries PostgreSQL with pgvector for similar past incidents in current session.
+    (Previously used Actian VectorAI DB with Cortex gRPC SDK - now commented out)
     """
 
-    def __init__(self, actian_client):
-        self.client = actian_client
+    def __init__(self, db_pool):
+        """
+        Args:
+            db_pool: asyncpg connection pool (previously actian_client)
+        """
+        self.pool = db_pool
 
     async def execute_history_search(
         self,
@@ -25,10 +29,7 @@ class HistoryRetrievalAgent:
         timeout: int = 200
     ) -> List[HistoryEntry]:
         """
-        Execute history search with session filter.
-
-        The Cortex SDK does not support a score_threshold parameter, so we
-        fetch top_k * 2 results and filter client-side by similarity_threshold.
+        Execute history search with session filter using pgvector.
 
         Returns:
             List of HistoryEntry objects from same session
@@ -36,43 +37,88 @@ class HistoryRetrievalAgent:
         start = time.perf_counter()
         current_time = time.time()
 
+        # COMMENTED OUT: Actian VectorAI DB code
+        # try:
+        #     from cortex import Filter, Field
+        #     results = await self.client.search(
+        #         collection_name="incident_log",
+        #         query=vector,
+        #         top_k=top_k * 2,
+        #         filter=Filter().must(Field("session_id").eq(session_id)),
+        #         with_payload=True,
+        #     )
+        #     history = []
+        #     for r in results:
+        #         score = float(r.score)
+        #         if score < similarity_threshold:
+        #             continue
+        #         payload = r.payload
+        #         ts = payload.get("timestamp", 0.0)
+        #         time_ago = current_time - ts
+        #         history.append(HistoryEntry(
+        #             raw_narrative=payload.get("raw_narrative", ""),
+        #             timestamp=ts,
+        #             trend_tag=payload.get("trend_tag", "UNKNOWN"),
+        #             hazard_level=payload.get("hazard_level", ""),
+        #             similarity_score=score,
+        #             time_ago_seconds=time_ago,
+        #         ))
+        #         if len(history) >= top_k:
+        #             break
+        #     query_time = (time.perf_counter() - start) * 1000
+        #     logger.info(f"History retrieval: {len(history)} results in {query_time:.2f}ms")
+        #     return history
+        # except Exception as e:
+        #     logger.error(f"History retrieval failed: {e}")
+        #     return []
+
+        # NEW: pgvector-based search
         try:
-            from cortex import Filter, Field
+            if not self.pool:
+                logger.warning("No database pool available")
+                return []
 
-            results = await self.client.search(
-                collection_name="incident_log",
-                query=vector,
-                top_k=top_k * 2,
-                filter=Filter().must(Field("session_id").eq(session_id)),
-                with_payload=True,
-            )
+            async with self.pool.acquire() as conn:
+                query = """
+                    SELECT
+                        raw_narrative,
+                        timestamp,
+                        trend_tag,
+                        hazard_level,
+                        1 - (narrative_vector <=> $1::vector) as similarity_score
+                    FROM incident_log
+                    WHERE session_id = $2
+                    ORDER BY narrative_vector <=> $1::vector
+                    LIMIT $3
+                """
 
-            history = []
-            for r in results:
-                score = float(r.score)
-                if score < similarity_threshold:
-                    continue
+                rows = await conn.fetch(query, vector, session_id, top_k * 2)
 
-                payload = r.payload
-                ts = payload.get("timestamp", 0.0)
-                time_ago = current_time - ts
+                history = []
+                for row in rows:
+                    score = float(row["similarity_score"])
+                    if score < similarity_threshold:
+                        continue
 
-                history.append(HistoryEntry(
-                    raw_narrative=payload.get("raw_narrative", ""),
-                    timestamp=ts,
-                    trend_tag=payload.get("trend_tag", "UNKNOWN"),
-                    hazard_level=payload.get("hazard_level", ""),
-                    similarity_score=score,
-                    time_ago_seconds=time_ago,
-                ))
+                    ts = row["timestamp"]
+                    time_ago = current_time - ts
 
-                if len(history) >= top_k:
-                    break
+                    history.append(HistoryEntry(
+                        raw_narrative=row["raw_narrative"],
+                        timestamp=ts,
+                        trend_tag=row["trend_tag"] or "UNKNOWN",
+                        hazard_level=row["hazard_level"],
+                        similarity_score=score,
+                        time_ago_seconds=time_ago,
+                    ))
 
-            query_time = (time.perf_counter() - start) * 1000
-            logger.info(f"History retrieval: {len(history)} results in {query_time:.2f}ms")
+                    if len(history) >= top_k:
+                        break
 
-            return history
+                query_time = (time.perf_counter() - start) * 1000
+                logger.info(f"History retrieval (pgvector): {len(history)} results in {query_time:.2f}ms")
+
+                return history
 
         except Exception as e:
             logger.error(f"History retrieval failed: {e}")

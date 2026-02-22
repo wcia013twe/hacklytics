@@ -1,7 +1,11 @@
--- Actian Vector DB Schema Initialization
+-- PostgreSQL + pgvector Schema Initialization
 -- Based on RAG.MD Section 3.2.3
 -- Creates safety_protocols (static knowledge base) and incident_log (dynamic temporal memory)
 
+-- Enable pgvector extension for vector similarity search
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- COMMENTED OUT: Actian Vector DB comments (now using standard PostgreSQL + pgvector)
 -- NOTE: Actian Vector has NATIVE vector support - no extension needed
 -- Unlike PostgreSQL + pgvector, Actian Vector type is built-in
 -- Reference: https://docs.actian.com/vector/6.0/index.html#page/User/Vector_Data_Types.htm
@@ -15,7 +19,7 @@
 
 CREATE TABLE IF NOT EXISTS safety_protocols (
     id              SERIAL PRIMARY KEY,
-    scenario_vector VECTOR(384),
+    embedding       VECTOR(384),  -- Vector embedding for similarity search
     protocol_text   TEXT NOT NULL,
     severity        VARCHAR(10) CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
     category        VARCHAR(50),
@@ -28,7 +32,7 @@ CREATE TABLE IF NOT EXISTS safety_protocols (
 -- lists=50 is optimized for ~100-500 protocols in the knowledge base
 CREATE INDEX IF NOT EXISTS idx_protocol_vector
 ON safety_protocols
-USING ivfflat (scenario_vector vector_cosine_ops)
+USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 50);
 
 -- Index for severity filtering (used in retrieval queries)
@@ -43,7 +47,7 @@ ON safety_protocols (severity);
 -- This is the short-term memory of the system.
 
 CREATE TABLE IF NOT EXISTS incident_log (
-    id                SERIAL PRIMARY KEY,
+    id                BIGINT PRIMARY KEY,  -- Deterministic hash-based ID from agent
     -- Unix epoch timestamp (UTC) from the original telemetry packet
     -- This is EVENT TIME - when the sensor reading occurred on the Jetson device
     -- Used for temporal analysis, trend detection, and session history queries

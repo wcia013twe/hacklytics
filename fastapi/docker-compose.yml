@@ -1,28 +1,28 @@
 version: '3.8'
 
 services:
-  # Actian VectorAI DB - gRPC-based vector storage for protocols and incident history
-  vectoraidb:
-    image: williamimoh/actian-vectorai-db:1.0b  # Public image from DockerHub
-    platform: linux/amd64   # Required on macOS with Apple Silicon
-    container_name: hacklytics_vectoraidb
+  # PostgreSQL with pgvector extension - Vector storage for protocols and incident history
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: hacklytics_postgres
+    environment:
+      POSTGRES_USER: hacklytics
+      POSTGRES_PASSWORD: hacklytics_dev
+      POSTGRES_DB: hacklytics_rag
     ports:
-      - "50051:50051"  # gRPC port (NOT PostgreSQL 5432)
+      - "5432:5432"
     volumes:
-      - actian_data:/data  # Collections and logs are persisted under /data
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - rag_network
     restart: unless-stopped
-    stop_grace_period: 2m  # Allow graceful shutdown for data persistence
     healthcheck:
-      # VectorAI DB doesn't have built-in health probe, use bash TCP connection test
-      # Using bash TCP redirect (works without nc/netcat in minimal containers)
-      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/localhost/50051' || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 120s  # Extended for amd64 emulation on Apple Silicon (much slower startup)
-    # Resource limits to prevent runaway consumption
+      test: ["CMD-SHELL", "pg_isready -U hacklytics -d hacklytics_rag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -31,6 +31,38 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
+
+  # Actian VectorAI DB - gRPC-based vector storage for protocols and incident history
+  # COMMENTED OUT - Using PostgreSQL with pgvector instead
+  # vectoraidb:
+  #   image: williamimoh/actian-vectorai-db:1.0b  # Public image from DockerHub
+  #   platform: linux/amd64   # Required on macOS with Apple Silicon
+  #   container_name: hacklytics_vectoraidb
+  #   ports:
+  #     - "50051:50051"  # gRPC port (NOT PostgreSQL 5432)
+  #   volumes:
+  #     - actian_data:/data  # Collections and logs are persisted under /data
+  #   networks:
+  #     - rag_network
+  #   restart: unless-stopped
+  #   stop_grace_period: 2m  # Allow graceful shutdown for data persistence
+  #   healthcheck:
+  #     # VectorAI DB doesn't have built-in health probe, use bash TCP connection test
+  #     # Using bash TCP redirect (works without nc/netcat in minimal containers)
+  #     test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/localhost/50051' || exit 1"]
+  #     interval: 20s
+  #     timeout: 10s
+  #     retries: 10
+  #     start_period: 120s  # Extended for amd64 emulation on Apple Silicon (much slower startup)
+  #   # Resource limits to prevent runaway consumption
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '2.0'
+  #         memory: 2G
+  #       reservations:
+  #         cpus: '0.5'
+  #         memory: 512M
 
   # Redis Cache Layer - 3-layer semantic caching (94-95% hit rate)
   redis:
@@ -69,14 +101,21 @@ services:
     ports:
       - "8001:8001"
     environment:
-      ACTIAN_HOST: vectoraidb  # Updated service name
-      ACTIAN_PORT: 50051  # gRPC port (changed from 5432)
+      # PostgreSQL connection settings
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: hacklytics
+      POSTGRES_PASSWORD: hacklytics_dev
+      POSTGRES_DB: hacklytics_rag
+      # Actian settings (COMMENTED OUT - using PostgreSQL instead)
+      # ACTIAN_HOST: host.docker.internal
+      # ACTIAN_PORT: 50051
       REDIS_URL: redis://redis:6379  # Redis cache layer
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
       BATCH_FLUSH_INTERVAL: ${BATCH_FLUSH_INTERVAL:-2.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
-      vectoraidb:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -152,12 +191,19 @@ services:
       dockerfile: Dockerfile.rag  # Reuses RAG image which has all dependencies
     container_name: hacklytics_test_runner
     environment:
-      ACTIAN_HOST: vectoraidb  # Updated service name
-      ACTIAN_PORT: 50051  # gRPC port (changed from 5432)
+      # PostgreSQL connection settings
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: hacklytics
+      POSTGRES_PASSWORD: hacklytics_dev
+      POSTGRES_DB: hacklytics_rag
+      # Actian settings (COMMENTED OUT - using PostgreSQL instead)
+      # ACTIAN_HOST: host.docker.internal
+      # ACTIAN_PORT: 50051
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
       PYTHONPATH: /app
     depends_on:
-      vectoraidb:
+      postgres:
         condition: service_healthy
     networks:
       - rag_network
@@ -185,9 +231,12 @@ networks:
     name: hacklytics_rag_network
 
 volumes:
-  actian_data:
-    name: hacklytics_actian_data
+  postgres_data:
+    name: hacklytics_postgres_data
     driver: local
+  # actian_data:  # COMMENTED OUT - using PostgreSQL instead
+  #   name: hacklytics_actian_data
+  #   driver: local
   redis_data:
     name: hacklytics_redis_data
     driver: local

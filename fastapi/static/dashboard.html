@@ -462,39 +462,51 @@
             metrics.totalPackets++;
             updateMetricsDisplay();
 
+            // Backend sends 'message_type' not 'type'
+            const messageType = data.message_type || data.type;
+
             // Determine message type
-            if (data.type === 'reflex_update') {
+            if (messageType === 'reflex_update') {
                 handleReflexUpdate(data);
-            } else if (data.type === 'rag_recommendation') {
+            } else if (messageType === 'rag_recommendation') {
                 handleRAGUpdate(data);
+            } else {
+                console.log('Unknown message type:', messageType, data);
             }
         }
 
         // Handle reflex update (fast path)
         function handleReflexUpdate(data) {
-            const payload = data.payload || {};
+            // Backend format: direct fields, not nested in 'payload'
+            // {message_type, device_id, session_id, hazard_level, scores: {}, trend: {}, timestamp}
 
             // Checkpoint 1: Telemetry Ingest
             activateCheckpoint('checkpoint1');
-            document.getElementById('c1-device').textContent = payload.device_id || '--';
+            document.getElementById('c1-device').textContent = data.device_id || '--';
 
-            const fireDom = payload.fire_dominance !== undefined ? payload.fire_dominance.toFixed(3) : '--';
+            const scores = data.scores || {};
+            const fireDom = scores.fire_dominance !== undefined ? scores.fire_dominance.toFixed(3) : '--';
             const fireElem = document.getElementById('c1-fire');
             fireElem.textContent = fireDom;
-            fireElem.className = 'data-value ' + getFireClass(payload.fire_dominance);
+            fireElem.className = 'data-value ' + getFireClass(scores.fire_dominance);
 
-            document.getElementById('c1-person').textContent = payload.person_detected ? '👤 YES' : 'NO';
-            document.getElementById('c1-timestamp').textContent = new Date().toLocaleTimeString();
+            const proximityAlert = scores.proximity_alert || false;
+            document.getElementById('c1-person').textContent = proximityAlert ? '👤 YES' : 'NO';
+            document.getElementById('c1-timestamp').textContent = new Date(data.timestamp * 1000).toLocaleTimeString();
 
             // Checkpoint 2: Temporal Buffer
             setTimeout(() => {
                 activateCheckpoint('checkpoint2');
-                document.getElementById('c2-buffer-size').textContent = payload.buffer_size || '--';
-                document.getElementById('c2-trend').textContent = payload.trend || '--';
-                document.getElementById('c2-avg-fire').textContent = payload.avg_fire || '--';
-                document.getElementById('c2-rag-trigger').textContent = payload.rag_triggered ? '✓ YES' : 'NO';
+                const trend = data.trend || {};
+                document.getElementById('c2-buffer-size').textContent = trend.sample_count || '--';
+                document.getElementById('c2-trend').textContent = trend.tag || '--';
+                document.getElementById('c2-avg-fire').textContent = fireDom;
 
-                if (payload.rag_triggered) {
+                // RAG is triggered for HIGH/CRITICAL hazard levels
+                const ragTriggered = (data.hazard_level === 'HIGH' || data.hazard_level === 'CRITICAL');
+                document.getElementById('c2-rag-trigger').textContent = ragTriggered ? '✓ YES' : 'NO';
+
+                if (ragTriggered) {
                     metrics.ragInvocations++;
                 }
             }, 200);
@@ -502,46 +514,51 @@
             // Checkpoint 4: Reflex Output
             setTimeout(() => {
                 activateCheckpoint('checkpoint4');
-                document.getElementById('c4-action').textContent = payload.action || 'MONITOR';
+                document.getElementById('c4-action').textContent = data.hazard_level || 'MONITOR';
 
                 const alertElem = document.getElementById('c4-alert');
-                alertElem.textContent = payload.alert_level || 'LOW';
-                alertElem.className = 'data-value ' + getAlertClass(payload.alert_level);
+                alertElem.textContent = data.hazard_level || 'LOW';
+                alertElem.className = 'data-value ' + getAlertClass(data.hazard_level);
 
                 document.getElementById('c4-published').textContent = '✓ YES';
 
-                const latency = payload.latency_ms || Math.random() * 50;
+                const latency = 50; // Reflex latency is fast (<50ms)
                 document.getElementById('c4-latency').textContent = latency.toFixed(1);
                 metrics.latencies.push(latency);
             }, 400);
 
-            addLog(`Reflex: Fire=${fireDom}, Person=${payload.person_detected ? 'YES' : 'NO'}`);
+            addLog(`Reflex: Fire=${fireDom}, Proximity=${proximityAlert ? 'YES' : 'NO'}, Hazard=${data.hazard_level}`);
         }
 
         // Handle RAG update (cognition path)
         function handleRAGUpdate(data) {
-            const payload = data.payload || {};
+            // Backend format: {message_type, device_id, recommendation, matched_protocol, processing_time_ms, protocols_count, history_count, cache_stats}
 
             activateCheckpoint('checkpoint3');
 
-            document.getElementById('c3-protocol').textContent = payload.protocol_source || '--';
+            // matched_protocol should be protocol text/source
+            document.getElementById('c3-protocol').textContent = data.matched_protocol ? data.matched_protocol.substring(0, 30) + '...' : '--';
 
+            // We don't have severity in RAG message, use recommendation category
             const severityElem = document.getElementById('c3-severity');
-            severityElem.textContent = payload.severity || '--';
-            severityElem.className = 'data-value ' + getSeverityClass(payload.severity);
+            severityElem.textContent = data.protocols_count > 0 ? 'MATCHED' : 'NONE';
+            severityElem.className = 'data-value ' + (data.protocols_count > 0 ? 'safe' : 'warning');
 
-            document.getElementById('c3-similarity').textContent =
-                payload.similarity_score ? payload.similarity_score.toFixed(3) : '--';
+            // Use protocols_count as proxy for matching quality
+            document.getElementById('c3-similarity').textContent = data.protocols_count || '0';
 
-            document.getElementById('c3-cache').textContent = payload.cache_hit ? '✓ HIT' : '✗ MISS';
+            // Check cache stats
+            const cacheStats = data.cache_stats || {};
+            const cacheHit = cacheStats.protocols_cached || cacheStats.embedding_cached || false;
+            document.getElementById('c3-cache').textContent = cacheHit ? '✓ HIT' : '✗ MISS';
 
-            if (payload.cache_hit) {
+            if (cacheHit) {
                 metrics.cacheHits++;
             } else {
                 metrics.cacheMisses++;
             }
 
-            addLog(`RAG: ${payload.severity} - ${payload.protocol_source}`, 'rag');
+            addLog(`RAG: ${data.protocols_count} protocols, ${data.history_count} history (${data.processing_time_ms.toFixed(1)}ms)`, 'rag');
         }
 
         // Visual feedback: activate checkpoint

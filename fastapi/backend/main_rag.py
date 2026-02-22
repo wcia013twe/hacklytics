@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 # Global orchestrator instance
 orchestrator: RAGOrchestrator = None
 
-# Global Actian client (for shutdown)
-_actian_client = None
+# Global database connection pool (for shutdown)
+_db_pool = None
 
 
 @asynccontextmanager
@@ -23,63 +23,98 @@ async def lifespan(app: FastAPI):
     """
     FastAPI lifespan: startup and shutdown hooks
     """
-    global orchestrator, _actian_client
+    global orchestrator, _db_pool
 
     logger.info("Starting RAG service...")
 
-    # Get Actian connection details from environment
-    actian_host = os.getenv("ACTIAN_HOST", "vectoraidb")
-    actian_port = int(os.getenv("ACTIAN_PORT", "50051"))
+    # Get PostgreSQL connection details from environment
+    postgres_host = os.getenv("POSTGRES_HOST", "postgres")
+    postgres_port = int(os.getenv("POSTGRES_PORT", "5432"))
+    postgres_user = os.getenv("POSTGRES_USER", "hacklytics")
+    postgres_password = os.getenv("POSTGRES_PASSWORD", "hacklytics_dev")
+    postgres_db = os.getenv("POSTGRES_DB", "hacklytics_rag")
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 
-    # Initialize Actian client via Cortex gRPC SDK
-    actian_client = None
+    # COMMENTED OUT: Actian VectorAI DB initialization
+    # actian_host = os.getenv("ACTIAN_HOST", "vectoraidb")
+    # actian_port = int(os.getenv("ACTIAN_PORT", "50051"))
+    # actian_client = None
+    # try:
+    #     from cortex import AsyncCortexClient
+    #     address = f"{actian_host}:{actian_port}"
+    #     actian_client = AsyncCortexClient(
+    #         address=address,
+    #         pool_size=3,
+    #         enable_smart_batching=True,
+    #     )
+    #     await actian_client.connect()
+    #     logger.info(f"Actian client connected at {address}")
+    #     for col_name in ("safety_protocols", "incident_log"):
+    #         try:
+    #             await actian_client.get_or_create_collection(
+    #                 name=col_name,
+    #                 dimension=384,
+    #                 distance_metric="COSINE",
+    #             )
+    #             logger.info(f"Collection ready: {col_name}")
+    #         except Exception as e:
+    #             logger.warning(f"Collection {col_name} setup failed (non-fatal): {e}")
+    #     _actian_client = actian_client
+    # except Exception as e:
+    #     logger.error(f"Actian client init failed (graceful degradation): {e}")
+    #     actian_client = None
+
+    # Initialize PostgreSQL connection pool with asyncpg
+    db_pool = None
     try:
-        from cortex import AsyncCortexClient
+        import asyncpg
 
-        address = f"{actian_host}:{actian_port}"
-        actian_client = AsyncCortexClient(
-            address=address,
-            pool_size=3,
-            enable_smart_batching=True,
+        db_pool = await asyncpg.create_pool(
+            host=postgres_host,
+            port=postgres_port,
+            user=postgres_user,
+            password=postgres_password,
+            database=postgres_db,
+            min_size=2,
+            max_size=10,
         )
-        await actian_client.connect()
-        logger.info(f"Actian client connected at {address}")
+        logger.info(f"PostgreSQL pool connected at {postgres_host}:{postgres_port}")
 
-        # Ensure collections exist (idempotent)
-        for col_name in ("safety_protocols", "incident_log"):
-            try:
-                await actian_client.get_or_create_collection(
-                    name=col_name,
-                    vector_size=384,
-                    distance="COSINE",
-                )
-                logger.info(f"Collection ready: {col_name}")
-            except Exception as e:
-                logger.warning(f"Collection {col_name} setup failed (non-fatal): {e}")
+        # Test connection
+        async with db_pool.acquire() as conn:
+            await conn.execute("SELECT 1")
+            logger.info("PostgreSQL connection verified")
 
-        _actian_client = actian_client
+        _db_pool = db_pool
 
     except Exception as e:
-        logger.error(f"Actian client init failed (graceful degradation): {e}")
-        actian_client = None
+        logger.error(f"PostgreSQL pool init failed (graceful degradation): {e}")
+        db_pool = None
 
-    # Initialize orchestrator
-    orchestrator = RAGOrchestrator(actian_client=actian_client, redis_url=redis_url)
+    # Initialize orchestrator (using pgvector pool instead of actian_client)
+    orchestrator = RAGOrchestrator(actian_client=db_pool, redis_url=redis_url)
     await orchestrator.startup()
 
-    logger.info(f"RAG service ready (Actian: {actian_host}:{actian_port}, connected={actian_client is not None})")
+    logger.info(f"RAG service ready (PostgreSQL: {postgres_host}:{postgres_port}, connected={db_pool is not None})")
 
     yield
 
     # Shutdown
     logger.info("Shutting down RAG service...")
-    if _actian_client:
+    if _db_pool:
         try:
-            await _actian_client.close()
-            logger.info("Actian client closed")
+            await _db_pool.close()
+            logger.info("PostgreSQL pool closed")
         except Exception as e:
-            logger.warning(f"Actian client close error: {e}")
+            logger.warning(f"PostgreSQL pool close error: {e}")
+
+    # COMMENTED OUT: Actian shutdown
+    # if _actian_client:
+    #     try:
+    #         await _actian_client.close()
+    #         logger.info("Actian client closed")
+    #     except Exception as e:
+    #         logger.warning(f"Actian client close error: {e}")
 
 
 app = FastAPI(lifespan=lifespan, title="RAG Service API", version="1.0")
@@ -91,7 +126,8 @@ async def health():
     return {
         "status": "healthy",
         "service": "rag",
-        "actian_connected": _actian_client is not None,
+        "postgres_connected": _db_pool is not None,
+        # "actian_connected": _actian_client is not None,  # COMMENTED OUT
         "rag_healthy": orchestrator.rag_health.is_healthy() if orchestrator else False,
         "metrics": orchestrator.metrics.summary() if orchestrator else {}
     }

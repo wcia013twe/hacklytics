@@ -120,14 +120,24 @@ class RAGOrchestrator:
         # Warmup embedding model (critical: first call is slow)
         await self.embedding_agent.warmup_model()
 
-        # Actian health check (warn on failure, don't crash)
-        if self.actian_client:
+        # Database health check (warn on failure, don't crash)
+        # COMMENTED OUT: Actian-specific health check
+        # if self.actian_client:
+        #     try:
+        #         collections = await self.actian_client.list_collections()
+        #         names = [c.name for c in collections]
+        #         logger.info(f"Actian connected — collections: {names}")
+        #     except Exception as e:
+        #         logger.warning(f"Actian health check failed (non-fatal): {e}")
+
+        # NEW: PostgreSQL health check
+        if self.actian_client:  # Note: actian_client is now the PostgreSQL pool
             try:
-                collections = await self.actian_client.list_collections()
-                names = [c.name for c in collections]
-                logger.info(f"Actian connected — collections: {names}")
+                async with self.actian_client.acquire() as conn:
+                    result = await conn.fetchval("SELECT current_database()")
+                    logger.info(f"PostgreSQL connected — database: {result}")
             except Exception as e:
-                logger.warning(f"Actian health check failed (non-fatal): {e}")
+                logger.warning(f"PostgreSQL health check failed (non-fatal): {e}")
 
         # Start background cleanup task
         asyncio.create_task(self._cleanup_old_incidents())
@@ -583,9 +593,24 @@ class RAGOrchestrator:
                 # Delete incidents older than 2 hours
                 cutoff_time = time.time() - (2 * 3600)
 
-                # Execute cleanup query
-                conn = await self.actian_client.pool.acquire()
-                try:
+                # COMMENTED OUT: Actian pool access pattern
+                # conn = await self.actian_client.pool.acquire()
+                # try:
+                #     result = await conn.execute(
+                #         "DELETE FROM incident_log WHERE timestamp < $1",
+                #         cutoff_time
+                #     )
+                #     if result and result != "DELETE 0":
+                #         deleted_count = result.split()[-1] if result.startswith("DELETE") else "unknown"
+                #         logger.info(f"🧹 Auto-cleanup: Deleted {deleted_count} old incidents (>2h)")
+                #         self.metrics.increment("cleanup.incidents_deleted", int(deleted_count) if deleted_count.isdigit() else 0)
+                # except Exception as e:
+                #     logger.error(f"⚠️ Cleanup query error: {e}")
+                # finally:
+                #     await self.actian_client.pool.release(conn)
+
+                # NEW: PostgreSQL asyncpg pool pattern
+                async with self.actian_client.acquire() as conn:
                     result = await conn.execute(
                         "DELETE FROM incident_log WHERE timestamp < $1",
                         cutoff_time
@@ -596,11 +621,6 @@ class RAGOrchestrator:
                         deleted_count = result.split()[-1] if result.startswith("DELETE") else "unknown"
                         logger.info(f"🧹 Auto-cleanup: Deleted {deleted_count} old incidents (>2h)")
                         self.metrics.increment("cleanup.incidents_deleted", int(deleted_count) if deleted_count.isdigit() else 0)
-
-                except Exception as e:
-                    logger.error(f"⚠️ Cleanup query error: {e}")
-                finally:
-                    await self.actian_client.pool.release(conn)
 
             except Exception as e:
                 logger.error(f"⚠️ Cleanup task error: {e}")
@@ -616,13 +636,18 @@ class RAGOrchestrator:
             return {"status": "error", "message": "No database connection"}
 
         try:
-            # Truncate incident_log
-            conn = await self.actian_client.pool.acquire()
-            try:
+            # COMMENTED OUT: Actian pool access pattern
+            # conn = await self.actian_client.pool.acquire()
+            # try:
+            #     await conn.execute("TRUNCATE TABLE incident_log")
+            #     logger.info("🔄 Demo reset: incident_log truncated")
+            # finally:
+            #     await self.actian_client.pool.release(conn)
+
+            # NEW: PostgreSQL asyncpg pool pattern
+            async with self.actian_client.acquire() as conn:
                 await conn.execute("TRUNCATE TABLE incident_log")
                 logger.info("🔄 Demo reset: incident_log truncated")
-            finally:
-                await self.actian_client.pool.release(conn)
 
             # Clear Redis cache
             if self.cache_agent and self.cache_agent.redis:
