@@ -1,0 +1,7 @@
+.env
+*.engine
+datasets/
+runs/
+__pycache__/
+*.pyc
+CLAUDE.md

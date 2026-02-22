@@ -1,35 +1,50 @@
 import time
+import threading
 import board
 import busio
 import cv2
 import numpy as np
 import adafruit_mlx90640
-import adafruit_bme680
+import bme680
+from smbus2 import SMBus
 from ultralytics import YOLO
-from flask import Flask, Response
+from flask import Flask, Response, jsonify, request
 from reflex_engine import ReflexEngine
+from zmq_publisher import ZmqPublisher
 
 # --- CONFIGURATION ---
-LAPTOP_IP = "192.168.1.XX"  # <--- REPLACE WITH YOUR COMPUTER'S IP
-BACKEND_URL = f"http://{LAPTOP_IP}:8000/ingest"
+BACKEND_IP = "100.66.9.90"  # <--- REPLACE WITH YOUR COMPUTER'S IP
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500 MB max upload
+
+UPLOAD_PATH = '/tmp/uploaded_video.mp4'
+_uploaded_video_path = None
 
 # --- HARDWARE SETUP ---
 print("Initializing Hardware...")
 try:
     i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
-    
+
     # Thermal Camera (MLX90640)
     mlx = adafruit_mlx90640.MLX90640(i2c)
     mlx.refresh_rate = adafruit_mlx90640.RefreshRate.REFRESH_8_HZ
-    frame_thermal = [0] * 768
-    
-    # Gas Sensor (BME680)
-    bme = adafruit_bme680.Adafruit_BME680_I2C(i2c)
-    # Calibrate Baseline (Assume clean air at startup)
+
+    # Gas Sensor (BME680) — native driver on bus 7
+    bme = bme680.BME680(bme680.I2C_ADDR_SECONDARY, i2c_device=SMBus(7))
+    bme.set_humidity_oversample(bme680.OS_2X)
+    bme.set_pressure_oversample(bme680.OS_4X)
+    bme.set_temperature_oversample(bme680.OS_8X)
+    bme.set_filter(bme680.FILTER_SIZE_3)
+    bme.set_gas_status(bme680.ENABLE_GAS_MEAS)
+    bme.set_gas_heater_temperature(320)
+    bme.set_gas_heater_duration(150)
+    # Calibrate baseline (wait for heater to stabilise)
     print("Calibrating Gas Sensor...")
-    gas_baseline = bme.gas
+    gas_baseline = None
+    while gas_baseline is None:
+        if bme.get_sensor_data() and bme.data.heat_stable:
+            gas_baseline = bme.data.gas_resistance
     print(f"Baseline Resistance: {gas_baseline} Ohms")
 
 except Exception as e:
@@ -37,28 +52,68 @@ except Exception as e:
     print("Running in EMULATION mode (No real sensors)")
     mlx = None
     bme = None
+    gas_baseline = None
+
+# --- BACKGROUND THERMAL READER ---
+# mlx.getFrame() blocks until the sensor produces a new frame (~125ms at 8Hz).
+# Running it in a separate thread keeps the camera loop from stalling.
+_thermal_max = 25.0
+_thermal_lock = threading.Lock()
+
+def _thermal_reader():
+    global _thermal_max
+    buf = [0] * 768
+    while True:
+        try:
+            mlx.getFrame(buf)
+            val = float(np.max(buf))
+            with _thermal_lock:
+                _thermal_max = val
+        except Exception:
+            pass
+
+if mlx:
+    t = threading.Thread(target=_thermal_reader, daemon=True)
+    t.start()
+
+# --- BACKGROUND BME680 READER ---
+_is_smoke = False
+_smoke_lock = threading.Lock()
+
+def _bme_reader():
+    global _is_smoke
+    while True:
+        try:
+            if bme.get_sensor_data() and bme.data.heat_stable:
+                val = (bme.data.gas_resistance / gas_baseline) < 0.8
+                with _smoke_lock:
+                    _is_smoke = val
+        except Exception:
+            pass
+
+if bme:
+    t = threading.Thread(target=_bme_reader, daemon=True)
+    t.start()
+
+# --- SHARED SENSOR STATE (read by /sensor_data endpoint) ---
+_sensor_state = {"max_temp": 25.0, "is_smoke": False, "hazard_level": "CLEAR"}
+_sensor_state_lock = threading.Lock()
 
 # --- AI ENGINES ---
 print("Loading YOLO Model...")
-model = YOLO('yolov8n.pt')
-reflex = ReflexEngine(BACKEND_URL)
-cap = cv2.VideoCapture(0)
+# Use TensorRT engine if available (export once with:
+#   python3 -c "from ultralytics import YOLO; YOLO('~/Downloads/best.pt').export(format='engine', half=True, device=0)")
+import os
+_model_path = 'best.engine' if os.path.exists('best.engine') else os.path.expanduser('~/Downloads/best.pt')
+print(f"  using {_model_path}")
+model = YOLO(_model_path)
+publisher = ZmqPublisher(BACKEND_IP)
+reflex = ReflexEngine(publisher)
 
-def get_thermal_overlay(temp_grid, img_shape):
-    """
-    Upscales 32x24 thermal data to match Webcam resolution
-    """
-    h, w = img_shape[:2]
-    grid = np.array(temp_grid).reshape((24, 32))
-    
-    # Resize to match webcam
-    heatmap = cv2.resize(grid, (w, h), interpolation=cv2.INTER_CUBIC)
-    
-    # Normalize and Color Map
-    norm = cv2.normalize(heatmap, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-    color_map = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
-    
-    return color_map, np.max(grid)
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # discard stale frames, always grab the latest
 
 def generate_frames():
     """
@@ -68,44 +123,27 @@ def generate_frames():
         success, frame = cap.read()
         if not success: break
 
-        # 1. READ SENSORS
-        max_temp = 25.0
-        is_smoke = False
-        thermal_img = None
-
-        if mlx:
-            try:
-                mlx.getFrame(frame_thermal)
-                thermal_img, max_temp = get_thermal_overlay(frame_thermal, frame.shape)
-            except Exception: pass # Ignore I2C errors
-        
-        if bme:
-             # If gas resistance drops below 80% of baseline -> Smoke
-             if (bme.gas / gas_baseline) < 0.8: 
-                 is_smoke = True
+        # 1. READ SENSORS (non-blocking — background threads own the hardware)
+        with _thermal_lock:
+            max_temp = _thermal_max
+        with _smoke_lock:
+            is_smoke = _is_smoke
 
         # 2. RUN VISION
-        results = model(frame, verbose=False)
+        results = model.track(frame, persist=True, tracker="botsort.yaml", verbose=False)
 
         # 3. RUN REFLEX LOGIC (Sends Data to Laptop)
         reflex.process_frame(frame.shape, results, max_temp, is_smoke)
-        
-        # 4. DRAW OVERLAYS
-        # Blend Thermal if available (70% Optical, 30% Thermal)
-        if thermal_img is not None:
-             frame = cv2.addWeighted(frame, 0.7, thermal_img, 0.3, 0)
 
-        # Draw YOLO Boxes
+        # 4. UPDATE SHARED SENSOR STATE (served to browser via /sensor_data)
+        with _sensor_state_lock:
+            _sensor_state["max_temp"] = round(max_temp, 1)
+            _sensor_state["is_smoke"] = is_smoke
+            _sensor_state["hazard_level"] = reflex.last_sent_state.get("hazard_level", "CLEAR")
+
+        # 5. DRAW OVERLAYS
+        # Draw YOLO Boxes only — no sensor text on the video
         annotated_frame = results[0].plot(img=frame)
-        
-        # Draw HUD
-        status_color = (0,0,255) if is_smoke or max_temp > 50 else (0,255,0)
-        cv2.putText(annotated_frame, f"Temp: {max_temp:.1f}C", (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
-        
-        if is_smoke:
-            cv2.putText(annotated_frame, "SMOKE DETECTED", (10, 60), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
 
         # Encode to JPEG for Browser
         ret, buffer = cv2.imencode('.jpg', annotated_frame)
@@ -114,13 +152,160 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
-@app.route('/')
-def index():
-    return "<h1>Dispatcher Live Feed</h1><img src='/video_feed' width='100%'>"
+def generate_uploaded_frames():
+    cap_file = cv2.VideoCapture(_uploaded_video_path)
+    if not cap_file.isOpened():
+        return
+
+    while True:
+        success, frame = cap_file.read()
+        if not success:
+            break  # end of video
+
+        results = model.track(frame, persist=True, tracker="botsort.yaml", verbose=False)
+        annotated_frame = results[0].plot(img=frame)
+
+        ret, buffer = cv2.imencode('.jpg', annotated_frame)
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+
+    cap_file.release()
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    global _uploaded_video_path
+    if 'video' not in request.files:
+        return jsonify({'error': 'no file'}), 400
+    f = request.files['video']
+    if not f.filename:
+        return jsonify({'error': 'empty filename'}), 400
+    f.save(UPLOAD_PATH)
+    _uploaded_video_path = UPLOAD_PATH
+    return jsonify({'status': 'ok', 'filename': f.filename})
+
+@app.route('/uploaded_feed')
+def uploaded_feed():
+    if not _uploaded_video_path:
+        return 'No video uploaded', 404
+    return Response(generate_uploaded_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/sensor_data')
+def sensor_data():
+    with _sensor_state_lock:
+        return jsonify(_sensor_state)
 
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/')
+def index():
+    return '''<!DOCTYPE html>
+<html>
+<head>
+  <title>Dispatcher Live Feed</title>
+  <style>
+    body { margin: 0; background: #111; color: #eee; font-family: monospace; }
+    #feed { width: 100%; display: block; }
+    #sensor-panel {
+      display: flex; gap: 24px; padding: 12px 16px;
+      background: #1a1a1a; font-size: 1.1rem; align-items: center;
+    }
+    .sensor-item { display: flex; flex-direction: column; }
+    .label { font-size: 0.75rem; color: #888; text-transform: uppercase; }
+    .value { font-size: 1.4rem; font-weight: bold; }
+    #hazard.CLEAR    { color: #4caf50; }
+    #hazard.LOW      { color: #cddc39; }
+    #hazard.MODERATE { color: #ff9800; }
+    #hazard.HIGH     { color: #f44336; }
+    #hazard.CRITICAL { color: #f44336; animation: blink 0.5s step-start infinite; }
+    #smoke.active    { color: #f44336; }
+    @keyframes blink { 50% { opacity: 0; } }
+    #upload-panel {
+      display: flex; gap: 12px; padding: 10px 16px;
+      background: #222; align-items: center; border-bottom: 1px solid #333;
+    }
+    #upload-panel input[type=file] { color: #eee; }
+    button {
+      background: #333; color: #eee; border: 1px solid #555;
+      padding: 6px 14px; cursor: pointer; font-family: monospace;
+    }
+    button:hover { background: #444; }
+    button.active { border-color: #4caf50; color: #4caf50; }
+    #upload-status { font-size: 0.85rem; color: #888; }
+  </style>
+</head>
+<body>
+  <div id="upload-panel">
+    <input type="file" id="file-input" accept="video/*">
+    <button onclick="uploadVideo()">Upload & Analyse</button>
+    <button id="btn-live"     class="active" onclick="setMode('live')">Live Camera</button>
+    <button id="btn-uploaded"               onclick="setMode('uploaded')">Uploaded Video</button>
+    <span id="upload-status"></span>
+  </div>
+  <div id="sensor-panel">
+    <div class="sensor-item">
+      <span class="label">Thermal Max</span>
+      <span class="value" id="temp">--</span>
+    </div>
+    <div class="sensor-item">
+      <span class="label">Smoke</span>
+      <span class="value" id="smoke">--</span>
+    </div>
+    <div class="sensor-item">
+      <span class="label">Hazard Level</span>
+      <span class="value" id="hazard">--</span>
+    </div>
+  </div>
+  <img id="feed" src="/video_feed">
+  <script>
+    function setMode(mode) {
+      const feed = document.getElementById('feed');
+      document.getElementById('btn-live').classList.toggle('active', mode === 'live');
+      document.getElementById('btn-uploaded').classList.toggle('active', mode === 'uploaded');
+      feed.src = mode === 'live' ? '/video_feed' : '/uploaded_feed';
+    }
+
+    function uploadVideo() {
+      const file = document.getElementById('file-input').files[0];
+      if (!file) { alert('Select a video file first'); return; }
+      const status = document.getElementById('upload-status');
+      status.textContent = 'Uploading...';
+      const form = new FormData();
+      form.append('video', file);
+      fetch('/upload', { method: 'POST', body: form })
+        .then(r => r.json())
+        .then(d => {
+          if (d.status === 'ok') {
+            status.textContent = d.filename + ' ready';
+            setMode('uploaded');
+          } else {
+            status.textContent = 'Error: ' + d.error;
+          }
+        });
+    }
+
+    function refresh() {
+      fetch('/sensor_data')
+        .then(r => r.json())
+        .then(d => {
+          document.getElementById('temp').textContent = d.max_temp + ' °C';
+
+          const smoke = document.getElementById('smoke');
+          smoke.textContent = d.is_smoke ? 'DETECTED' : 'Clear';
+          smoke.className = d.is_smoke ? 'value active' : 'value';
+
+          const hazard = document.getElementById('hazard');
+          hazard.textContent = d.hazard_level;
+          hazard.className = 'value ' + d.hazard_level;
+        });
+    }
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>'''
 
 if __name__ == '__main__':
     # Run Web Server on Port 5000
