@@ -27,6 +27,29 @@ services:
           cpus: '0.5'
           memory: 512M
 
+  # Auto-seeder for VectorAI DB
+  vectoraidb-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.rag
+    container_name: hacklytics_vectoraidb_init
+    environment:
+      ACTIAN_HOST: vectoraidb
+      ACTIAN_PORT: 50051
+    depends_on:
+      vectoraidb:
+        condition: service_started
+    networks:
+      - rag_network
+    volumes:
+      - ./scripts:/app/scripts
+      - model_cache:/root/.cache/torch
+    command: >
+      bash -c "echo 'Waiting for Actian...' && 
+      sleep 5 && 
+      python scripts/seed_erg_protocols.py"
+    restart: "no"
+
   # RAG Service - Embedding, retrieval, synthesis, incident logging
   rag:
     build:
