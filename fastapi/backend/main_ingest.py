@@ -199,6 +199,49 @@ async def get_api_metrics():
     }
 
 
+@app.post("/broadcast")
+async def broadcast_message(message: dict):
+    """
+    Relay aggregated intelligence to all dashboard WebSocket clients
+
+    Called by aggregator service when building-wide synthesis is ready.
+    Broadcasts message to all connected dashboard clients via WebSocket.
+
+    Args:
+        message: Aggregation payload (formatted as RAG recommendation)
+
+    Returns:
+        Status confirmation
+    """
+    try:
+        if not orchestrator:
+            return {"status": "error", "error": "Orchestrator not initialized"}
+
+        # Broadcast to all connected WebSocket clients via orchestrator's reflex publisher
+        # Try all registered sessions by iterating through all connected clients
+        total_clients_reached = 0
+        for session_id in orchestrator.reflex_publisher.ws_clients.keys():
+            result = await orchestrator.reflex_publisher.websocket_broadcast(
+                message,
+                session_id=session_id,
+                timeout_ms=50
+            )
+            total_clients_reached += result.get("clients_reached", 0)
+
+        logger.info(f"📡 Broadcast aggregation: {message.get('recommendation', '')[:50]}...")
+
+        return {
+            "status": "broadcast_sent",
+            "message_type": message.get('message_type'),
+            "responder_count": message.get('protocols_count', 0),
+            "clients_reached": total_clients_reached
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Broadcast failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
