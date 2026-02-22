@@ -44,7 +44,7 @@ function App() {
         setSimRunning(data.running ?? !simRunning);
       } else if (demoRes) {
         const data = await demoRes.json();
-        setSimRunning(data.status === 'started' || data.running ?? !simRunning);
+        setSimRunning((data.status === 'started' || data.running) ?? !simRunning);
       } else {
         console.error('Both gateway and backend demo unavailable');
       }
