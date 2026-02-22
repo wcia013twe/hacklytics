@@ -1,0 +1,64 @@
+{
+  "responder_id": "R-KITCHEN-01",
+  "location": "Kitchen (Building A)",
+  "scenario_name": "Grease Fire Escalation",
+  "duration_sec": 60,
+  "events": [
+    {
+      "timestamp_offset": 0,
+      "hazard_level": "CAUTION",
+      "narrative": "Small grease fire detected on stove. Smoke detector activated.",
+      "fire_dominance": 0.15,
+      "smoke_opacity": 0.3,
+      "temp_f": 180,
+      "entities": ["fire"],
+      "responder_vitals": {
+        "heart_rate": 85,
+        "o2_level": 98,
+        "aqi": 65
+      }
+    },
+    {
+      "timestamp_offset": 15,
+      "hazard_level": "HIGH",
+      "narrative": "Fire spreading to nearby cabinets. Flames reaching 3ft height.",
+      "fire_dominance": 0.45,
+      "smoke_opacity": 0.6,
+      "temp_f": 320,
+      "entities": ["fire", "smoke"],
+      "responder_vitals": {
+        "heart_rate": 115,
+        "o2_level": 95,
+        "aqi": 140
+      }
+    },
+    {
+      "timestamp_offset": 30,
+      "hazard_level": "CRITICAL",
+      "narrative": "FLASHOVER IMMINENT. Full room involvement. Evacuate immediately.",
+      "fire_dominance": 0.85,
+      "smoke_opacity": 0.95,
+      "temp_f": 480,
+      "entities": ["fire", "smoke", "structural_stress"],
+      "responder_vitals": {
+        "heart_rate": 165,
+        "o2_level": 88,
+        "aqi": 380
+      }
+    },
+    {
+      "timestamp_offset": 45,
+      "hazard_level": "CRITICAL",
+      "narrative": "Post-flashover. Sustained 500F+ temperatures. Structure compromised.",
+      "fire_dominance": 0.95,
+      "smoke_opacity": 0.98,
+      "temp_f": 520,
+      "entities": ["fire", "smoke", "structural_stress"],
+      "responder_vitals": {
+        "heart_rate": 175,
+        "o2_level": 85,
+        "aqi": 450
+      }
+    }
+  ]
+}

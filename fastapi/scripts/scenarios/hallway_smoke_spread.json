@@ -1,0 +1,64 @@
+{
+  "responder_id": "R-HALLWAY-01",
+  "location": "Hallway (Building A)",
+  "scenario_name": "Smoke Propagation from Kitchen",
+  "duration_sec": 60,
+  "events": [
+    {
+      "timestamp_offset": 0,
+      "hazard_level": "CLEAR",
+      "narrative": "Routine patrol. No hazards detected. All exits clear.",
+      "fire_dominance": 0.0,
+      "smoke_opacity": 0.0,
+      "temp_f": 72,
+      "entities": [],
+      "responder_vitals": {
+        "heart_rate": 76,
+        "o2_level": 99,
+        "aqi": 42
+      }
+    },
+    {
+      "timestamp_offset": 20,
+      "hazard_level": "CAUTION",
+      "narrative": "Smoke entering from kitchen door. Visibility reducing to 30ft.",
+      "fire_dominance": 0.0,
+      "smoke_opacity": 0.4,
+      "temp_f": 95,
+      "entities": ["smoke"],
+      "responder_vitals": {
+        "heart_rate": 92,
+        "o2_level": 97,
+        "aqi": 120
+      }
+    },
+    {
+      "timestamp_offset": 35,
+      "hazard_level": "HIGH",
+      "narrative": "Heavy smoke. Visibility <10ft. Emergency lighting activated.",
+      "fire_dominance": 0.0,
+      "smoke_opacity": 0.8,
+      "temp_f": 140,
+      "entities": ["smoke"],
+      "responder_vitals": {
+        "heart_rate": 125,
+        "o2_level": 92,
+        "aqi": 280
+      }
+    },
+    {
+      "timestamp_offset": 50,
+      "hazard_level": "HIGH",
+      "narrative": "Near-zero visibility. Thermal imaging required. Exit routes compromised.",
+      "fire_dominance": 0.0,
+      "smoke_opacity": 0.95,
+      "temp_f": 180,
+      "entities": ["smoke"],
+      "responder_vitals": {
+        "heart_rate": 135,
+        "o2_level": 89,
+        "aqi": 350
+      }
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "responder_id": "R-LIVING-ROOM-01",
+  "location": "Living Room (Building A)",
+  "scenario_name": "Structural Integrity Monitoring",
+  "duration_sec": 60,
+  "events": [
+    {
+      "timestamp_offset": 0,
+      "hazard_level": "CLEAR",
+      "narrative": "Normal conditions. Structural integrity nominal.",
+      "fire_dominance": 0.0,
+      "smoke_opacity": 0.0,
+      "temp_f": 72,
+      "entities": [],
+      "responder_vitals": {
+        "heart_rate": 68,
+        "o2_level": 99,
+        "aqi": 40
+      }
+    },
+    {
+      "timestamp_offset": 40,
+      "hazard_level": "CAUTION",
+      "narrative": "Elevated ambient temperature. Minor structural stress indicators detected.",
+      "fire_dominance": 0.0,
+      "smoke_opacity": 0.1,
+      "temp_f": 110,
+      "entities": ["structural_stress"],
+      "responder_vitals": {
+        "heart_rate": 82,
+        "o2_level": 98,
+        "aqi": 75
+      }
+    },
+    {
+      "timestamp_offset": 50,
+      "hazard_level": "HIGH",
+      "narrative": "Ceiling integrity compromised. Visible cracks. Load-bearing wall stressed.",
+      "fire_dominance": 0.0,
+      "smoke_opacity": 0.2,
+      "temp_f": 160,
+      "entities": ["structural_stress"],
+      "responder_vitals": {
+        "heart_rate": 105,
+        "o2_level": 96,
+        "aqi": 140
+      }
+    }
+  ]
+}
