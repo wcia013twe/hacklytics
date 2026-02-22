@@ -584,6 +584,65 @@ async def broadcast_message(message: dict):
         return {"status": "error", "error": str(e)}
 
 
+# ==============================================================================
+# DEMO MODE: API Endpoints
+# ==============================================================================
+
+@app.post("/demo/start")
+async def start_demo():
+    """
+    Start multi-location demo mode
+
+    Spawns asyncio task that broadcasts scripted fake RAG messages over 60 seconds.
+    DOES NOT pollute real pipeline - only sends WebSocket messages.
+
+    Returns:
+        {"status": "started", "duration_sec": 60, "scenarios": 3}
+    """
+    global demo_manager
+
+    if not demo_manager:
+        demo_manager = DemoManager(orchestrator.reflex_publisher)
+
+    result = await demo_manager.start()
+    return result
+
+
+@app.post("/demo/stop")
+async def stop_demo():
+    """
+    Stop demo mode
+
+    Cancels demo asyncio task and stops fake message broadcasts.
+
+    Returns:
+        {"status": "stopped", "elapsed_sec": <seconds_ran>}
+    """
+    global demo_manager
+
+    if not demo_manager:
+        return {"status": "not_running"}
+
+    result = await demo_manager.stop()
+    return result
+
+
+@app.get("/demo/status")
+async def demo_status():
+    """
+    Get demo status
+
+    Returns:
+        {"running": bool, "elapsed_sec": float, "scenarios": int}
+    """
+    global demo_manager
+
+    if not demo_manager:
+        return {"running": False, "scenarios": len(DEMO_SCENARIOS)}
+
+    return demo_manager.get_status()
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
