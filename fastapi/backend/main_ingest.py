@@ -2,8 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import time
 import zmq
 import zmq.asyncio
+from pathlib import Path
+from typing import Dict, List, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 
@@ -159,6 +162,206 @@ DEMO_SCENARIOS = {
         ]
     }
 }
+
+# ==============================================================================
+# DEMO MODE: DemoManager class
+# ==============================================================================
+
+class DemoManager:
+    """
+    Manages demo mode: broadcasts scripted fake RAG results on timeline
+
+    ZERO PIPELINE POLLUTION:
+    - Does NOT call orchestrator.process_packet()
+    - Does NOT write to database
+    - Only broadcasts fake WebSocket messages
+    """
+
+    def __init__(self, reflex_publisher):
+        self.reflex_publisher = reflex_publisher
+        self.demo_task = None
+        self.running = False
+        self.start_time = None
+
+    async def start(self) -> Dict:
+        """Start demo: spawn asyncio task broadcasting fake RAG messages"""
+        if self.running:
+            return {"status": "already_running", "elapsed_sec": time.time() - self.start_time}
+
+        self.start_time = time.time()
+        self.demo_task = asyncio.create_task(self._run_demo())
+        self.running = True
+
+        logger.info("🎬 Demo mode started")
+        return {
+            "status": "started",
+            "duration_sec": 60,
+            "scenarios": len(DEMO_SCENARIOS)
+        }
+
+    async def stop(self) -> Dict:
+        """Stop demo: cancel asyncio task"""
+        if not self.running:
+            return {"status": "not_running"}
+
+        if self.demo_task:
+            self.demo_task.cancel()
+            try:
+                await self.demo_task
+            except asyncio.CancelledError:
+                pass
+
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        self.running = False
+        self.demo_task = None
+
+        logger.info(f"🛑 Demo mode stopped (ran for {elapsed:.1f}s)")
+        return {"status": "stopped", "elapsed_sec": elapsed}
+
+    def get_status(self) -> Dict:
+        """Get demo status"""
+        if not self.running:
+            return {"running": False, "scenarios": len(DEMO_SCENARIOS)}
+
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        return {
+            "running": True,
+            "elapsed_sec": elapsed,
+            "scenarios": len(DEMO_SCENARIOS),
+            "timeline_events": len(self._build_timeline())
+        }
+
+    async def _run_demo(self):
+        """
+        Main demo loop: broadcasts fake RAG messages according to timeline
+        Runs for 60 seconds total
+        """
+        try:
+            timeline = self._build_timeline()
+            logger.info(f"📋 Demo timeline: {len(timeline)} events over 60s")
+
+            for timestamp, event in timeline:
+                # Wait until event time
+                elapsed = time.time() - self.start_time
+                wait = timestamp - elapsed
+
+                if wait > 0:
+                    await asyncio.sleep(wait)
+
+                # Broadcast fake RAG message
+                fake_rag = self._build_fake_rag(event)
+                await self.reflex_publisher.websocket_broadcast(
+                    fake_rag,
+                    session_id="demo_mode",
+                    timeout_ms=50
+                )
+
+                logger.info(
+                    f"📡 T+{int(time.time() - self.start_time):2d}s | "
+                    f"{event['location']:20s} | {event['hazard_level']:8s} | "
+                    f"{event['narrative'][:40]}..."
+                )
+
+                # If CRITICAL event, also trigger aggregation
+                if event['hazard_level'] == 'CRITICAL' and not hasattr(self, '_aggregation_sent'):
+                    self._aggregation_sent = True
+                    fake_aggregation = self._build_fake_aggregation()
+                    await self.reflex_publisher.websocket_broadcast(
+                        fake_aggregation,
+                        session_id="demo_mode",
+                        timeout_ms=50
+                    )
+                    logger.info("🚨 AGGREGATION TRIGGERED - Building-wide emergency")
+
+            logger.info("✅ Demo completed (60s)")
+            self.running = False
+
+        except asyncio.CancelledError:
+            logger.info("🛑 Demo cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Demo error: {e}", exc_info=True)
+            self.running = False
+
+    def _build_timeline(self) -> List[Tuple[float, Dict]]:
+        """
+        Build timeline: merge all scenarios into single sorted timeline
+
+        Returns:
+            List of (timestamp, event) tuples sorted by timestamp
+        """
+        timeline = []
+
+        for location_key, scenario in DEMO_SCENARIOS.items():
+            location = scenario['location']
+            responder_id = scenario['responder_id']
+
+            for event in scenario['events']:
+                timeline_event = {
+                    'location': location,
+                    'responder_id': responder_id,
+                    **event  # timestamp_offset, hazard_level, narrative, etc.
+                }
+                timeline.append((event['timestamp_offset'], timeline_event))
+
+        # Sort by timestamp
+        timeline.sort(key=lambda x: x[0])
+        return timeline
+
+    def _build_fake_rag(self, event: Dict) -> Dict:
+        """Build fake RAG recommendation message for one location"""
+        return {
+            "message_type": "rag_recommendation",
+            "device_id": event['responder_id'],
+            "timestamp": time.time(),
+            "recommendation": event['narrative'],
+            "matched_protocol": f"Protocol {event['protocol_id']}",
+            "processing_time_ms": 120,  # Fake timing
+            "protocols_count": 1,
+            "history_count": 0,
+            "cache_stats": {},
+            "rag_data": {
+                "protocol_id": event['protocol_id'],
+                "hazard_type": event['hazard_type'],
+                "source_text": event['narrative'],
+                "actionable_commands": event.get('commands', [])
+            }
+        }
+
+    def _build_fake_aggregation(self) -> Dict:
+        """Build fake building-wide aggregation (triggered on first CRITICAL)"""
+        return {
+            "message_type": "rag_recommendation",
+            "device_id": "BUILDING_AGGREGATOR",
+            "timestamp": time.time(),
+            "recommendation": (
+                "Kitchen CRITICAL flashover imminent | Fire spreading to hallway "
+                "(smoke detected) | Living room structural integrity compromised | "
+                "EVACUATE Kitchen unit, establish defensive perimeter at hallway, "
+                "monitor collapse zones"
+            ),
+            "matched_protocol": "Multi-Location Protocol 999",
+            "processing_time_ms": 450,
+            "protocols_count": 3,
+            "history_count": 12,
+            "cache_stats": {},
+            "rag_data": {
+                "protocol_id": "999",
+                "hazard_type": "MULTI-LOCATION EMERGENCY",
+                "source_text": (
+                    "Kitchen CRITICAL flashover imminent | Fire spreading to hallway "
+                    "(smoke detected) | Living room structural integrity compromised"
+                ),
+                "actionable_commands": [
+                    {"target": "Alpha-1 (Kitchen)", "directive": "EVACUATE NORTH - 100FT (BLEVE)"},
+                    {"target": "Bravo-2 (Hallway)", "directive": "ESTABLISH DEFENSIVE PERIMETER - Smoke spreading"},
+                    {"target": "Delta-4 (Living Room)", "directive": "EVACUATE - Collapse imminent"}
+                ]
+            }
+        }
+
+# Global demo manager instance
+demo_manager: DemoManager = None
 
 
 @asynccontextmanager
