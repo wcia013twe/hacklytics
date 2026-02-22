@@ -1,7 +1,11 @@
 export type SystemStatus = 'nominal' | 'warning' | 'critical';
 
+export type ActionPriority = 'P1_CRITICAL' | 'P2_IMMEDIATE' | 'P3_PRECAUTION';
+
 export interface ActionCommand {
     target: string;
+    priority?: ActionPriority;
+    esg_reference?: string;
     directive: string;
 }
 

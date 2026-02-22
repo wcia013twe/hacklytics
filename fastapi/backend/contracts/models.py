@@ -17,8 +17,10 @@ from datetime import datetime
 import os
 
 class ActionCommand(BaseModel):
-    target: str = Field(..., description="Who receives the command ('Rescue Team', 'IC', 'All Units')")
-    directive: str = Field(..., description="What they must do — imperative, specific, ≤12 words")
+    target: str = Field(..., description="Who receives the command ('Rescue Team', 'IC', 'All Personnel')")
+    priority: Optional[str] = Field(default="P2_IMMEDIATE", description="P1_CRITICAL | P2_IMMEDIATE | P3_PRECAUTION")
+    esg_reference: Optional[str] = Field(default="", description="ERG guide/section this directive is grounded in")
+    directive: str = Field(..., description="What they must do — imperative, specific, ≤15 words")
 
 class FormatterResult(BaseModel):
     action_command: str = Field(..., description="Single primary directive (≤15 words, imperative)")

@@ -12,10 +12,19 @@ logger = logging.getLogger(__name__)
 OLLAMA_DEFAULT_URL = "http://localhost:11434"
 OLLAMA_DEFAULT_MODEL = "llama3.2:1b"
 
-FORMATTER_SYSTEM_PROMPT = """You are a fire fire incident commander AI.
+FORMATTER_SYSTEM_PROMPT = """You are a fire safety AI generating Emergency Response Guide (ERG) actionable directives for first responders.
 Given a retrieved ERG protocol and live scene data, output ONLY valid JSON — no preamble, no markdown.
-Ground every command in the specific objects present (use IDs if given).
-Keep directives short: imperative, ≤12 words each."""
+
+Ground EVERY command directly in the ERG protocol text provided. Follow ESG (Emergency Services Guideline) principles:
+- P1 CRITICAL: Immediate life-safety actions (personnel in immediate danger, <30s window)
+- P2 IMMEDIATE: High-priority actions within 2 minutes (PPE, isolation zones, hazmat controls)
+- P3 PRECAUTION: Precautionary actions within 5 minutes (staging, resource prep, monitoring)
+
+For each directive:
+- Cite the specific ERG guideline or protocol section that mandates it (e.g. "ERG Guide 115 — Initial Isolation Zone")
+- Target the correct responder role: "Incident Commander", "Rescue Team", "Medical Unit", "All Personnel", "Hazmat Team"
+- Keep directives short: imperative, ≤15 words each. Every directive must protect operator life.
+- Do NOT fabricate protocol references — only cite what is present in the ERG excerpt provided."""
 
 class ProtocolFormatterAgent:
     """
@@ -86,7 +95,9 @@ class ProtocolFormatterAgent:
                     commands = []
                     for cmd in parsed.get("actionable_commands", []):
                         commands.append(ActionCommand(
-                            target=cmd.get("target", "All Units"),
+                            target=cmd.get("target", "All Personnel"),
+                            priority=cmd.get("priority", "P2_IMMEDIATE"),
+                            esg_reference=cmd.get("esg_reference", ""),
                             directive=cmd.get("directive", "Maintain safety")
                         ))
                     
@@ -134,8 +145,8 @@ class ProtocolFormatterAgent:
             f"{o.get('label', 'unknown')} #{o.get('id', 'N/A')} ({o.get('status', 'unknown')})" for o in tracked_objects
         ) or "none"
 
-        # Trim protocol to first 600 chars to stay within context window
-        protocol_excerpt = protocol_text[:600].strip()
+        # Trim protocol to first 900 chars to give LLM sufficient ERG context for grounded references
+        protocol_excerpt = protocol_text[:900].strip()
 
         return f"""{FORMATTER_SYSTEM_PROMPT}
 
@@ -143,18 +154,20 @@ Scene: {hazard_level} — {visual_narrative}
 Detected: {objects_str}
 Source: {source}
 
-ERG Protocol (excerpt):
+ERG Protocol (excerpt — use this as your sole guideline reference):
 {protocol_excerpt}
 
-Output JSON only:
+Output JSON only (4 actionable_commands, ordered P1→P3):
 {{
-  "action_command": "<primary directive, ≤15 words>",
-  "action_reason": "<ERG reference + scene fact, ≤25 words>",
+  "action_command": "<primary safety directive for operators, ≤15 words>",
+  "action_reason": "<ERG reference + specific danger to operators, ≤30 words>",
   "hazard_type": "<ERG hazard class name>",
-  "source_text": "<key excerpt, ≤3 sentences>",
+  "source_text": "<key safety-relevant excerpt from ERG protocol above, ≤3 sentences>",
   "actionable_commands": [
-    {{"target": "<who>", "directive": "<what, ≤12 words>"}},
-    {{"target": "<who>", "directive": "<what, ≤12 words>"}}
+    {{"target": "<responder role>", "priority": "P1_CRITICAL", "esg_reference": "<ERG guide/section cited>", "directive": "<life-safety action, ≤15 words>"}},
+    {{"target": "<responder role>", "priority": "P2_IMMEDIATE", "esg_reference": "<ERG guide/section cited>", "directive": "<high-priority action, ≤15 words>"}},
+    {{"target": "<responder role>", "priority": "P2_IMMEDIATE", "esg_reference": "<ERG guide/section cited>", "directive": "<high-priority action, ≤15 words>"}},
+    {{"target": "<responder role>", "priority": "P3_PRECAUTION", "esg_reference": "<ERG guide/section cited>", "directive": "<precautionary action, ≤15 words>"}}
   ]
 }}"""
 
@@ -166,7 +179,7 @@ Output JSON only:
             "stream": False,
             "options": {
                 "temperature": 0.1,  # Lower temperature for formatting
-                "num_predict": 500,   # Enough headroom for full JSON payload
+                "num_predict": 700,   # Headroom for 4 commands with priority + esg_reference fields
                 "top_p": 0.8,
             }
         }

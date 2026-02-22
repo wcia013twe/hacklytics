@@ -125,7 +125,7 @@ class TemporalNarrativeAgent:
                     logger.info(f"Temporal synthesis: {elapsed_ms:.1f}ms via {self.model_name}")
 
                     return TemporalSynthesisResult(
-                        synthesized_narrative=synthesized_text[:200],
+                        synthesized_narrative=synthesized_text[:300],
                         original_narratives=original_narratives,
                         time_span=time_span,
                         synthesis_time_ms=elapsed_ms,
@@ -151,21 +151,32 @@ class TemporalNarrativeAgent:
         current_time = time.time()
         timeline = []
 
-        for pkt in buffer_packets[-5:]:  # Last 5 packets max
+        for pkt in buffer_packets[-5:]:
             age = current_time - pkt["timestamp"]
-            narrative = pkt["packet"].visual_narrative
+            p = pkt["packet"]
+            narrative = p.visual_narrative
             priority = pkt.get("priority", "CAUTION")
-            timeline.append(f"T-{age:.1f}s [{priority}]: {narrative}")
+            # Include sensor data if available
+            temp = getattr(p, 'mlx90640_temp_f', None) or ''
+            aqi = getattr(p, 'bme680_aqi', None) or ''
+            sensor_str = ''
+            if temp:
+                sensor_str += f' Temp:{temp}°F'
+            if aqi:
+                sensor_str += f' AQI:{aqi}'
+            hazard = getattr(p, 'hazard_level', 'UNKNOWN')
+            timeline.append(f"T-{age:.1f}s [{hazard}]{sensor_str}: {narrative}")
 
         timeline_str = "\n".join(timeline)
 
-        return f"""You are a fire safety AI. Synthesize these observations into ONE sentence (max 200 chars).
-Focus on: what changed, current state, trajectory. No speculation. Present tense for now, past for changes.
+        return f"""You are a fire safety AI analyst for emergency dispatchers. Provide a brief situational assessment (max 300 chars) based on these sequential observations.
+
+Include: (1) what changed over time, (2) current threat level and trajectory (escalating/stable/de-escalating), (3) key sensor anomalies if any. Use present tense for current state, past tense for changes. No speculation, no preamble.
 
 Observations (oldest→newest):
 {timeline_str}
 
-Output (200 chars max, single sentence, no preamble):"""
+Situational assessment (300 chars max, 2-3 sentences):"""
 
     async def _call_ollama(self, prompt: str) -> str:
         """Call Ollama /api/generate endpoint with timeout."""
@@ -175,7 +186,7 @@ Output (200 chars max, single sentence, no preamble):"""
             "stream": False,
             "options": {
                 "temperature": 0.2,
-                "num_predict": 80,  # ~200 chars
+                "num_predict": 120,  # ~300 chars
                 "top_p": 0.8,
             }
         }
@@ -195,7 +206,7 @@ Output (200 chars max, single sentence, no preamble):"""
     def _validate_synthesis(self, response: str) -> bool:
         if not response or not isinstance(response, str):
             return False
-        if len(response) < 1 or len(response) > 200:
+        if len(response) < 1 or len(response) > 300:
             return False
         for pattern in ["error", "failed", "cannot", "unable", "N/A", "TODO"]:
             if pattern in response.lower():

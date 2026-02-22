@@ -1,4 +1,4 @@
-import { Camera, HeartPulse, Thermometer, Wind, X } from 'lucide-react';
+import { Camera, X } from 'lucide-react';
 import type { Responder } from '../types/websocket';
 
 interface ResponderDetailViewProps {
@@ -78,53 +78,6 @@ export function ResponderDetailView({ responder, onClose }: ResponderDetailViewP
 
             </div>
 
-            {/* Telemetry Strip Chart */}
-            {/* Telemetry Strip Chart */}
-            <div className="h-32 bg-black/80 border-t border-white/10 grid grid-cols-3 divide-x divide-white/10 z-20">
-
-                {/* Vitals: Heart Rate */}
-                <div className="flex items-center px-8 space-x-6 relative group overflow-hidden">
-                    <div className="absolute bottom-0 left-0 w-full h-[2px] bg-rose-500/50 transform origin-left group-hover:scale-x-100 transition-transform" />
-                    <div className="p-4 bg-rose-950/30 border border-rose-900 text-rose-500">
-                        <HeartPulse className="w-8 h-8 group-hover:animate-bounce" />
-                    </div>
-                    <div>
-                        <div className="text-slate-500 text-[10px] uppercase tracking-[0.2em] mb-1 font-bold">HRV Monitor</div>
-                        <div className="text-4xl font-mono text-rose-400 font-bold flex items-baseline tracking-tighter">
-                            {responder.vitals.heart_rate} <span className="text-xs text-rose-500/50 ml-2 tracking-widest font-normal">BPM</span>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Vitals: O2 Level */}
-                <div className="flex items-center px-8 space-x-6 relative group overflow-hidden">
-                    <div className="absolute bottom-0 left-0 w-full h-[2px] bg-sky-500/50 transform origin-left group-hover:scale-x-100 transition-transform" />
-                    <div className="p-4 bg-sky-950/30 border border-sky-900 text-sky-500">
-                        <Wind className="w-8 h-8" />
-                    </div>
-                    <div>
-                        <div className="text-slate-500 text-[10px] uppercase tracking-[0.2em] mb-1 font-bold">Blood O2</div>
-                        <div className="text-4xl font-mono text-sky-400 font-bold flex items-baseline tracking-tighter">
-                            {responder.vitals.o2_level} <span className="text-xs text-sky-500/50 ml-2 tracking-widest font-normal">%</span>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Vitals: Environment AQI */}
-                <div className="flex items-center px-8 space-x-6 relative group overflow-hidden">
-                    <div className="absolute bottom-0 left-0 w-full h-[2px] bg-amber-500/50 transform origin-left group-hover:scale-x-100 transition-transform" />
-                    <div className="p-4 bg-amber-950/30 border border-amber-900 text-amber-500">
-                        <Thermometer className="w-8 h-8" />
-                    </div>
-                    <div>
-                        <div className="text-slate-500 text-[10px] uppercase tracking-[0.2em] mb-1 font-bold">Ambient AQI</div>
-                        <div className="text-4xl font-mono font-bold flex items-baseline text-amber-400 tracking-tighter">
-                            {responder.vitals.aqi} <span className="text-xs text-amber-500/50 ml-2 tracking-widest font-normal">IDX</span>
-                        </div>
-                    </div>
-                </div>
-
-            </div>
 
         </div>
     );

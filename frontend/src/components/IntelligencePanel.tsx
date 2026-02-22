@@ -1,6 +1,12 @@
-import { Database, FileText, Crosshair, Terminal, ChevronRight } from 'lucide-react';
-import type { RagData } from '../types/websocket';
+import { Database, FileText, Crosshair, Terminal, ChevronRight, BookOpen } from 'lucide-react';
+import type { RagData, ActionPriority } from '../types/websocket';
 import { useEffect, useState } from 'react';
+
+const PRIORITY_STYLES: Record<ActionPriority, { badge: string; border: string; label: string }> = {
+    P1_CRITICAL: { badge: 'bg-rose-900/60 text-rose-300 border border-rose-700/60', border: 'border-rose-600/60', label: 'P1 · CRITICAL' },
+    P2_IMMEDIATE: { badge: 'bg-amber-900/50 text-amber-300 border border-amber-700/50', border: 'border-amber-700/40', label: 'P2 · IMMEDIATE' },
+    P3_PRECAUTION: { badge: 'bg-emerald-900/40 text-emerald-400 border border-emerald-700/40', border: 'border-emerald-700/30', label: 'P3 · PRECAUTION' },
+};
 
 interface IntelligencePanelProps {
     data: RagData | undefined;
@@ -47,42 +53,58 @@ export function IntelligencePanel({ data }: IntelligencePanelProps) {
                         </div>
                     </div>
 
-                    {/* Actionable Commands */}
+                    {/* Operator Safety Notices */}
                     {data.actionable_commands && data.actionable_commands.length > 0 && (
                         <div className="flex-1 flex flex-col min-h-[150px]">
-                            <div className="text-[10px] uppercase text-sky-500/80 font-bold tracking-[0.2em] mb-2 border-b border-slate-700/50 pb-1 flex items-center shrink-0">
+                            <div className="text-[10px] uppercase text-amber-500 font-bold tracking-[0.2em] mb-2 border-b border-amber-700/40 pb-1 flex items-center shrink-0">
                                 <Terminal className="w-3 h-3 mr-2" />
-                                Tactical Directives
+                                ⚠ Operator Safety Notices
                             </div>
                             <div className="flex flex-col gap-2 overflow-y-auto pr-2 hide-scrollbar">
-                                {data.actionable_commands.map((cmd, idx) => (
-                                    <div key={idx} className="relative bg-slate-900/40 border border-slate-700/50 p-3 hover:border-sky-500/50 hover:bg-slate-800/60 transition-all group">
-                                        <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-sky-500/50 group-hover:border-sky-400 transition-colors" />
-                                        <div className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-sky-500/50 group-hover:border-sky-400 transition-colors" />
+                                {data.actionable_commands.map((cmd, idx) => {
+                                    const pKey = (cmd.priority ?? 'P2_IMMEDIATE') as ActionPriority;
+                                    const pStyle = PRIORITY_STYLES[pKey] ?? PRIORITY_STYLES.P2_IMMEDIATE;
+                                    return (
+                                    <div key={idx} className={`relative bg-slate-900/60 border ${pStyle.border} p-3 hover:bg-slate-900/80 transition-all group`}>
+                                        <div className={`absolute top-0 left-0 w-2 h-2 border-t border-l ${pStyle.border} transition-colors`} />
+                                        <div className={`absolute bottom-0 right-0 w-2 h-2 border-b border-r ${pStyle.border} transition-colors`} />
                                         <div className="flex items-start">
-                                            <div className="bg-sky-950/50 p-1.5 mr-3 border border-sky-900/50 shrink-0 group-hover:bg-sky-900/60 transition-colors">
-                                                <Crosshair className="w-4 h-4 text-sky-400 group-hover:text-sky-300" />
+                                            <div className="bg-slate-800/60 p-1.5 mr-3 border border-slate-700/50 shrink-0">
+                                                <Crosshair className="w-4 h-4 text-slate-400" />
                                             </div>
-                                            <div className="flex flex-col w-full">
-                                                <div className="flex justify-between items-center mb-1">
-                                                    <span className="text-slate-400 font-mono text-[10px] uppercase tracking-widest flex items-center">
-                                                        <ChevronRight className="w-3 h-3 text-sky-500 mr-0.5" />
-                                                        Target Unit
+                                            <div className="flex flex-col w-full gap-1">
+                                                {/* Priority badge + target */}
+                                                <div className="flex items-center justify-between">
+                                                    <span className={`text-[9px] font-mono font-bold uppercase tracking-widest px-1.5 py-0.5 ${pStyle.badge}`}>
+                                                        {pStyle.label}
                                                     </span>
-                                                    <span className="text-[9px] text-sky-500/70 font-mono bg-sky-950/30 px-1 border border-sky-900/30">
-                                                        ACT_{idx.toString().padStart(2, '0')}
+                                                    <span className="text-[9px] text-slate-500 font-mono bg-slate-800/50 px-1 border border-slate-700/30">
+                                                        DIRECTIVE_{idx.toString().padStart(2, '0')}
                                                     </span>
                                                 </div>
-                                                <span className="text-white font-bold text-sm tracking-widest uppercase mb-2">
-                                                    {cmd.target}
-                                                </span>
-                                                <div className="bg-black/20 border-l-2 border-amber-500/50 pl-3 py-1 text-slate-300 font-medium text-sm leading-snug">
+                                                {/* Role */}
+                                                <div className="flex items-center">
+                                                    <ChevronRight className="w-3 h-3 text-slate-500 mr-0.5 shrink-0" />
+                                                    <span className="text-slate-300 font-bold text-xs tracking-widest uppercase">
+                                                        {cmd.target}
+                                                    </span>
+                                                </div>
+                                                {/* Directive */}
+                                                <div className="bg-black/20 border-l-2 border-slate-600/50 pl-3 py-1 text-slate-200 font-medium text-sm leading-snug">
                                                     {cmd.directive}
                                                 </div>
+                                                {/* ERG reference */}
+                                                {cmd.esg_reference && (
+                                                    <div className="flex items-center gap-1 text-[9px] text-sky-500/80 font-mono mt-0.5">
+                                                        <BookOpen className="w-2.5 h-2.5 shrink-0" />
+                                                        <span className="truncate">{cmd.esg_reference}</span>
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     )}
