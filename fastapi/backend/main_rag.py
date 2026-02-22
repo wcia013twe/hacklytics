@@ -176,6 +176,25 @@ async def get_guardrails_metrics():
     return orchestrator.guardrails_agent.get_metrics()
 
 
+@app.post("/admin/reset")
+async def reset_demo():
+    """
+    Reset system for new demo: Clear incident_log and cache.
+
+    WARNING: Hackathon-only endpoint! Remove before production.
+    Use between demos to ensure clean state.
+    """
+    if not orchestrator:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+
+    result = await orchestrator.reset_demo()
+
+    if result["status"] == "error":
+        raise HTTPException(status_code=500, detail=result["message"])
+
+    return result
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)

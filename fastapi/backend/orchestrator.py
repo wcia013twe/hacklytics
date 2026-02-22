@@ -129,6 +129,9 @@ class RAGOrchestrator:
             except Exception as e:
                 logger.warning(f"Actian health check failed (non-fatal): {e}")
 
+        # Start background cleanup task
+        asyncio.create_task(self._cleanup_old_incidents())
+
         logger.info("RAGOrchestrator ready")
 
     async def process_packet(self, raw_message: str) -> Dict:
@@ -562,6 +565,81 @@ class RAGOrchestrator:
             self.rag_health.is_healthy() and
             len(packet.visual_narrative) > 10
         )
+
+    async def _cleanup_old_incidents(self):
+        """
+        Background task: Delete incident_log entries older than 2 hours.
+        Runs every 10 minutes to prevent unbounded database growth.
+
+        Hackathon-safe: Keeps last 2 hours of data, auto-cleans old sessions.
+        """
+        while True:
+            try:
+                await asyncio.sleep(600)  # Run every 10 minutes
+
+                if not self.actian_client:
+                    continue  # Skip if no database connection
+
+                # Delete incidents older than 2 hours
+                cutoff_time = time.time() - (2 * 3600)
+
+                # Execute cleanup query
+                conn = await self.actian_client.pool.acquire()
+                try:
+                    result = await conn.execute(
+                        "DELETE FROM incident_log WHERE timestamp < $1",
+                        cutoff_time
+                    )
+
+                    # Log cleanup activity
+                    if result and result != "DELETE 0":
+                        deleted_count = result.split()[-1] if result.startswith("DELETE") else "unknown"
+                        logger.info(f"🧹 Auto-cleanup: Deleted {deleted_count} old incidents (>2h)")
+                        self.metrics.increment("cleanup.incidents_deleted", int(deleted_count) if deleted_count.isdigit() else 0)
+
+                except Exception as e:
+                    logger.error(f"⚠️ Cleanup query error: {e}")
+                finally:
+                    await self.actian_client.pool.release(conn)
+
+            except Exception as e:
+                logger.error(f"⚠️ Cleanup task error: {e}")
+                # Continue running despite errors
+
+    async def reset_demo(self):
+        """
+        Manual reset for demo purposes: Clear all incident logs and cache.
+
+        WARNING: Hackathon-only! Remove before production.
+        """
+        if not self.actian_client:
+            return {"status": "error", "message": "No database connection"}
+
+        try:
+            # Truncate incident_log
+            conn = await self.actian_client.pool.acquire()
+            try:
+                await conn.execute("TRUNCATE TABLE incident_log")
+                logger.info("🔄 Demo reset: incident_log truncated")
+            finally:
+                await self.actian_client.pool.release(conn)
+
+            # Clear Redis cache
+            if self.cache_agent and self.cache_agent.redis:
+                await self.cache_agent.redis.flushdb()
+                logger.info("🔄 Demo reset: Redis cache cleared")
+
+            # Reset metrics
+            self.metrics = OrchestratorMetrics()
+
+            return {
+                "status": "success",
+                "message": "Demo reset complete - incident_log truncated, cache cleared"
+            }
+
+        except Exception as e:
+            logger.error(f"⚠️ Demo reset error: {e}")
+            return {"status": "error", "message": str(e)}
 
     async def _mock_protocols(self):
         """Mock protocol retrieval for testing without Actian"""

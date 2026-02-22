@@ -32,6 +32,34 @@ services:
           cpus: '0.5'
           memory: 512M
 
+  # Redis Cache Layer - 3-layer semantic caching (94-95% hit rate)
+  redis:
+    image: redis:7-alpine
+    container_name: hacklytics_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - rag_network
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
   # RAG Service - Embedding, retrieval, synthesis, incident logging
   rag:
     build:
@@ -43,11 +71,14 @@ services:
     environment:
       ACTIAN_HOST: vectoraidb  # Updated service name
       ACTIAN_PORT: 50051  # gRPC port (changed from 5432)
+      REDIS_URL: redis://redis:6379  # Redis cache layer
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
       BATCH_FLUSH_INTERVAL: ${BATCH_FLUSH_INTERVAL:-2.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
       vectoraidb:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - rag_network
@@ -156,6 +187,9 @@ networks:
 volumes:
   actian_data:
     name: hacklytics_actian_data
+    driver: local
+  redis_data:
+    name: hacklytics_redis_data
     driver: local
   model_cache:
     name: hacklytics_model_cache

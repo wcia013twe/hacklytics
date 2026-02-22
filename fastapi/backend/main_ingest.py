@@ -3,7 +3,10 @@ import json
 import logging
 import zmq
 import zmq.asyncio
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 
 from .orchestrator import RAGOrchestrator
@@ -43,6 +46,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Mount static files (dashboard)
+static_dir = Path(__file__).parent.parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    logger.info(f"Static files mounted from {static_dir}")
+
+
+@app.get("/")
+async def root():
+    """Serve the dashboard HTML"""
+    dashboard_path = static_dir / "dashboard.html"
+    if dashboard_path.exists():
+        return FileResponse(dashboard_path)
+    return {"message": "Dashboard not found. Check /health for API status."}
 
 
 async def zmq_listener():

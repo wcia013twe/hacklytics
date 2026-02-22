@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  actian:
+    image: ankane/pgvector:latest
+    container_name: hacklytics_actian
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: vectordb
+      POSTGRES_PASSWORD: vectordb_pass
+      POSTGRES_DB: safety_rag
+    volumes:
+      - actian_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    networks:
+      - hacklytics_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vectordb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ====================================
+  # Redis Cache Layer
+  # ====================================
+  redis:
+    image: redis:7-alpine
+    container_name: hacklytics_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - hacklytics_network
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  hacklytics_network:
+    driver: bridge
+
+volumes:
+  actian_data:
+    driver: local
+  redis_data:
+    driver: local
