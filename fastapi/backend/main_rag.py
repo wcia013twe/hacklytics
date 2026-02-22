@@ -212,6 +212,34 @@ async def get_guardrails_metrics():
     return orchestrator.guardrails_agent.get_metrics()
 
 
+@app.get("/temporal/metrics")
+async def get_temporal_metrics():
+    """
+    Get temporal narrative synthesis metrics
+
+    Returns Claude API call stats including:
+    - total_requests: Total synthesis attempts
+    - successful_syntheses: Successful Claude API calls
+    - fallback_used: Times fallback was used
+    - api_errors, timeouts: Error counts
+    - avg_latency_ms: Average Claude API latency
+    - success_rate: Percentage of successful API calls
+    """
+    if not orchestrator or not orchestrator.temporal_narrative_agent:
+        return {
+            "api_available": False,
+            "total_requests": 0,
+            "successful_syntheses": 0,
+            "fallback_used": 0,
+            "api_errors": 0,
+            "timeouts": 0,
+            "avg_latency_ms": 0.0,
+            "success_rate": 0.0
+        }
+
+    return orchestrator.temporal_narrative_agent.get_metrics()
+
+
 @app.post("/admin/reset")
 async def reset_demo():
     """

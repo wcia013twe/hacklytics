@@ -29,7 +29,7 @@ import asyncio
 import time
 import logging
 from typing import List, Dict, Optional
-import google.generativeai as genai
+from anthropic import AsyncAnthropic
 
 from backend.contracts.models import TemporalSynthesisResult
 
@@ -51,68 +51,36 @@ class TemporalNarrativeAgent:
     def __init__(
         self,
         api_key: str,
-        model_name: str = "gemini-1.5-flash-002",
+        model_name: str = "claude-3-5-haiku-20241022",
         max_tokens: int = 100,
         temperature: float = 0.3
     ):
         """
-        Initialize Gemini client with optimized configuration.
+        Initialize Anthropic Claude client with optimized configuration.
 
         Args:
-            api_key: Google Gemini API key
-            model_name: Gemini model to use (default: gemini-1.5-flash-002)
+            api_key: Anthropic API key
+            model_name: Claude model to use (default: claude-3-5-haiku-20241022)
             max_tokens: Maximum output tokens (default: 100 ≈ 200 chars)
             temperature: Temperature for generation (default: 0.3 for consistency)
         """
         if not api_key:
-            logger.warning("No Gemini API key provided - will always use fallback concatenation")
-            self.model = None
+            logger.warning("No Anthropic API key provided - will always use fallback concatenation")
+            self.client = None
             self.api_available = False
         else:
             try:
-                genai.configure(api_key=api_key)
-
-                # Optimized generation config for low latency
-                self.generation_config = {
-                    "temperature": temperature,
-                    "top_p": 0.8,
-                    "top_k": 20,
-                    "max_output_tokens": max_tokens,
-                    "candidate_count": 1,
-                }
-
-                # Safety settings (permissive for fire safety domain)
-                self.safety_settings = [
-                    {
-                        "category": "HARM_CATEGORY_HARASSMENT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_HATE_SPEECH",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                ]
-
-                self.model = genai.GenerativeModel(
-                    model_name=model_name,
-                    generation_config=self.generation_config,
-                    safety_settings=self.safety_settings
-                )
+                self.client = AsyncAnthropic(api_key=api_key)
+                self.model_name = model_name
+                self.max_tokens = max_tokens
+                self.temperature = temperature
 
                 self.api_available = True
-                logger.info(f"Gemini client initialized: {model_name}")
+                logger.info(f"Anthropic Claude client initialized: {model_name}")
 
             except Exception as e:
-                logger.error(f"Failed to initialize Gemini client: {e}")
-                self.model = None
+                logger.error(f"Failed to initialize Anthropic client: {e}")
+                self.client = None
                 self.api_available = False
 
         # Performance metrics
@@ -130,7 +98,7 @@ class TemporalNarrativeAgent:
         self.retry_delays = [0.05, 0.1, 0.2]  # Exponential backoff in seconds
 
         # Timeout configuration
-        self.api_timeout_seconds = 0.2  # 200ms hard timeout
+        self.api_timeout_seconds = 2.0  # 2000ms hard timeout (Claude Haiku needs ~500-1000ms)
 
     async def synthesize_temporal_narrative(
         self,
@@ -178,26 +146,8 @@ class TemporalNarrativeAgent:
             if pkt.get("timestamp", 0) >= cutoff_time
         ]
 
-        # If only one packet, no synthesis needed
-        if len(recent_packets) <= 1:
-            if recent_packets:
-                narrative = recent_packets[0]["packet"].visual_narrative
-                time_span = 0.0
-            else:
-                narrative = "No recent observations"
-                time_span = 0.0
-
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-
-            return TemporalSynthesisResult(
-                synthesized_narrative=narrative[:200],  # Enforce 200-char limit
-                original_narratives=[narrative] if recent_packets else [],
-                time_span=time_span,
-                synthesis_time_ms=elapsed_ms,
-                event_count=len(recent_packets),
-                cache_hit=False,
-                fallback_used=True
-            )
+        # FALLBACK DISABLED - Always call Claude API even for single packet
+        # (removed early return for single packet)
 
         # Extract original narratives
         original_narratives = [
@@ -208,45 +158,48 @@ class TemporalNarrativeAgent:
         timestamps = [pkt["timestamp"] for pkt in recent_packets]
         time_span = max(timestamps) - min(timestamps)
 
-        # Try Gemini synthesis if API available
-        if self.api_available and self.model:
-            try:
-                # Build prompt
-                prompt = self._build_timeline_prompt(recent_packets)
+        # FALLBACK DISABLED - Must call Claude API or raise error
+        if not self.api_available or not self.client:
+            raise RuntimeError(f"❌ Claude API not available - cannot synthesize (api_available={self.api_available})")
 
-                # Call Gemini API with retry logic
-                synthesized_text = await self._call_gemini_api(prompt)
+        # Build prompt
+        prompt = self._build_timeline_prompt(recent_packets)
 
-                # Validate synthesis
-                if self._validate_synthesis(synthesized_text):
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000
-                    self.metrics["successful_syntheses"] += 1
-                    self.metrics["total_latency_ms"] += elapsed_ms
+        logger.info(f"🤖 CALLING CLAUDE API for {len(recent_packets)} events (FALLBACK DISABLED)")
 
-                    logger.info(f"Temporal synthesis completed in {elapsed_ms:.1f}ms: {synthesized_text[:50]}...")
+        # Call Claude API with retry logic - NO FALLBACK
+        try:
+            synthesized_text = await self._call_claude_api(prompt)
 
-                    return TemporalSynthesisResult(
-                        synthesized_narrative=synthesized_text[:200],  # Enforce limit
-                        original_narratives=original_narratives,
-                        time_span=time_span,
-                        synthesis_time_ms=elapsed_ms,
-                        event_count=len(recent_packets),
-                        cache_hit=False,
-                        fallback_used=False
-                    )
-                else:
-                    logger.warning("Gemini synthesis validation failed, using fallback")
+            # Validate synthesis
+            if not self._validate_synthesis(synthesized_text):
+                raise ValueError(f"Claude synthesis validation failed: {synthesized_text[:100]}")
 
-            except asyncio.TimeoutError:
-                logger.warning(f"Gemini API timeout after {self.api_timeout_seconds*1000}ms, using fallback")
-                self.metrics["timeouts"] += 1
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            self.metrics["successful_syntheses"] += 1
+            self.metrics["total_latency_ms"] += elapsed_ms
 
-            except Exception as e:
-                logger.error(f"Gemini API error: {e}, using fallback")
-                self.metrics["api_errors"] += 1
+            logger.info(f"✅ CLAUDE API SUCCESS in {elapsed_ms:.1f}ms: {synthesized_text[:50]}...")
 
-        # Fallback to concatenation
-        return self._fallback_concatenation(recent_packets, original_narratives, time_span, start_time)
+            return TemporalSynthesisResult(
+                synthesized_narrative=synthesized_text[:200],  # Enforce limit
+                original_narratives=original_narratives,
+                time_span=time_span,
+                synthesis_time_ms=elapsed_ms,
+                event_count=len(recent_packets),
+                cache_hit=False,
+                fallback_used=False
+            )
+
+        except asyncio.TimeoutError as e:
+            self.metrics["timeouts"] += 1
+            logger.error(f"⏱️ CLAUDE API TIMEOUT after {self.api_timeout_seconds*1000}ms - NO FALLBACK")
+            raise  # Propagate error - no fallback
+
+        except Exception as e:
+            self.metrics["api_errors"] += 1
+            logger.error(f"❌ CLAUDE API ERROR: {e} - NO FALLBACK")
+            raise  # Propagate error - no fallback
 
     def _build_timeline_prompt(self, buffer_packets: List[Dict]) -> str:
         """
@@ -320,9 +273,9 @@ YOUR OUTPUT (200 chars max):"""
 
         return prompt
 
-    async def _call_gemini_api(self, prompt: str) -> str:
+    async def _call_claude_api(self, prompt: str) -> str:
         """
-        Call Gemini API with timeout and retry logic.
+        Call Claude API with timeout and retry logic.
 
         Retry Strategy:
         - 3 attempts max
@@ -343,28 +296,39 @@ YOUR OUTPUT (200 chars max):"""
 
         for attempt in range(self.max_retries):
             try:
-                # Call with timeout
+                # Call Claude API with timeout
                 response = await asyncio.wait_for(
-                    self.model.generate_content_async(prompt),
+                    self.client.messages.create(
+                        model=self.model_name,
+                        max_tokens=self.max_tokens,
+                        temperature=self.temperature,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ]
+                    ),
                     timeout=self.api_timeout_seconds
                 )
 
-                # Extract text
-                if response and response.text:
-                    return response.text.strip()
+                # Extract text from response
+                if response and response.content and len(response.content) > 0:
+                    text = response.content[0].text.strip()
+                    return text
                 else:
-                    logger.warning(f"Empty response from Gemini (attempt {attempt + 1})")
-                    last_error = Exception("Empty response from Gemini")
+                    logger.warning(f"Empty response from Claude (attempt {attempt + 1})")
+                    last_error = Exception("Empty response from Claude")
 
             except asyncio.TimeoutError:
-                logger.warning(f"Gemini timeout on attempt {attempt + 1}/{self.max_retries}")
-                last_error = asyncio.TimeoutError("Gemini API timeout")
+                logger.warning(f"Claude timeout on attempt {attempt + 1}/{self.max_retries}")
+                last_error = asyncio.TimeoutError("Claude API timeout")
 
                 # Don't retry on timeout (already at latency limit)
                 raise last_error
 
             except Exception as e:
-                logger.warning(f"Gemini error on attempt {attempt + 1}/{self.max_retries}: {e}")
+                logger.warning(f"Claude error on attempt {attempt + 1}/{self.max_retries}: {e}")
                 last_error = e
 
                 # Wait before retry (exponential backoff)
@@ -461,7 +425,7 @@ YOUR OUTPUT (200 chars max):"""
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-        logger.debug(f"Fallback concatenation in {elapsed_ms:.1f}ms: {concatenated[:50]}...")
+        logger.info(f"⚙️ FALLBACK CONCATENATION in {elapsed_ms:.1f}ms: {concatenated[:50]}...")
 
         return TemporalSynthesisResult(
             synthesized_narrative=concatenated,

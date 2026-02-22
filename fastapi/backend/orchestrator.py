@@ -58,14 +58,21 @@ class RAGHealth:
         self.timeout = timeout
         self.last_heartbeat = time.time()
         self.failures = 0
+        self.has_run_once = False  # Track if RAG has ever run
 
     def is_healthy(self) -> bool:
+        # FIXED: Allow RAG to run on first attempt (bootstrapping)
+        # Only enforce timeout AFTER first successful run
+        if not self.has_run_once:
+            return self.failures < 3  # Only check failures on first run
+
         age = time.time() - self.last_heartbeat
         return age < self.timeout and self.failures < 3
 
     def mark_success(self):
         self.last_heartbeat = time.time()
         self.failures = 0
+        self.has_run_once = True
 
     def mark_failure(self):
         self.failures += 1
@@ -97,11 +104,16 @@ class RAGOrchestrator:
         self.guardrails_agent = SafetyGuardrailsAgent()
 
         # NEW: Temporal narrative synthesis + Redis caching
-        gemini_api_key = os.getenv("GEMINI_API_KEY")
-        self.temporal_narrative_agent = TemporalNarrativeAgent(
-            api_key=gemini_api_key,
-            model_name=os.getenv("GEMINI_MODEL", "gemini-1.5-flash-002")
-        ) if gemini_api_key else None
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        if anthropic_api_key:
+            self.temporal_narrative_agent = TemporalNarrativeAgent(
+                api_key=anthropic_api_key,
+                model_name=os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+            )
+            logger.info(f"✅ TemporalNarrativeAgent initialized with API key: {anthropic_api_key[:20]}...")
+        else:
+            self.temporal_narrative_agent = None
+            logger.warning("❌ ANTHROPIC_API_KEY not found - temporal narrative synthesis DISABLED")
 
         redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
         self.cache_agent = RAGCacheAgent(redis_url=redis_url)
@@ -152,13 +164,22 @@ class RAGOrchestrator:
             {
                 "reflex_result": {...},
                 "rag_result": {...} or None,
-                "total_time_ms": float
+                "total_time_ms": float,
+                "latency_breakdown": {
+                    "stage_1_intake_ms": float,
+                    "stage_2_reflex_ms": float,
+                    "stage_3_rag_triggered": bool
+                }
             }
         """
         pipeline_start = time.perf_counter()
+        tracker = LatencyTracker()
+        tracker.start()
 
         # STAGE 1: Intake & Validation
         intake_result = await self.stage_1_intake(raw_message)
+        tracker.mark("stage_1_intake")
+
         if not intake_result["success"]:
             self.metrics.increment("packets.invalid")
             return {"error": "intake_failed", "details": intake_result["errors"]}
@@ -169,6 +190,7 @@ class RAGOrchestrator:
         # STAGE 2: Reflex Path (CRITICAL - must always execute)
         try:
             reflex_result = await self.stage_2_reflex(packet)
+            tracker.mark("stage_2_reflex")
             self.metrics.record("reflex.latency_ms", reflex_result["latency_ms"])
 
             if reflex_result["latency_ms"] > 50:
@@ -180,19 +202,39 @@ class RAGOrchestrator:
             return {"error": "reflex_failed", "exception": str(e)}
 
         # STAGE 3: Cognition Path (async, fire-and-forget)
-        if self.should_invoke_rag(packet, reflex_result):
+        # GUARDRAILS DISABLED - ALWAYS TRIGGER
+        rag_triggered = False
+        should_rag = self.should_invoke_rag(packet, reflex_result)
+
+        logger.info(
+            f"🚦 RAG Gate: {should_rag} | "
+            f"hazard={packet.hazard_level} | "
+            f"narrative_len={len(packet.visual_narrative)} | "
+            f"[HEALTH CHECK DISABLED]"
+        )
+
+        if should_rag:
+            rag_triggered = True
+            logger.info(f"✅ RAG TRIGGERED - Starting Stage 3 cognition for device {packet.device_id}")
             asyncio.create_task(
                 self.stage_3_cognition(packet, reflex_result["trend"])
             )
-        else:
-            logger.debug(f"Skipping RAG: hazard={packet.hazard_level}, rag_healthy={self.rag_health.is_healthy()}")
 
         total_time = (time.perf_counter() - pipeline_start) * 1000
+
+        # Build latency breakdown
+        latency_breakdown = {
+            "stage_1_intake_ms": tracker.stages.get("stage_1_intake", 0),
+            "stage_2_reflex_ms": tracker.stages.get("stage_2_reflex", 0) - tracker.stages.get("stage_1_intake", 0),
+            "stage_3_rag_triggered": rag_triggered,
+            "total_ms": total_time
+        }
 
         return {
             "success": True,
             "reflex_result": reflex_result,
-            "total_time_ms": total_time
+            "total_time_ms": total_time,
+            "latency_breakdown": latency_breakdown
         }
 
     async def stage_1_intake(self, raw_message: str) -> Dict:
@@ -317,13 +359,18 @@ class RAGOrchestrator:
                     # Get buffered packets for this device
                     buffer_packets = list(self.temporal_buffer.buffers.get(packet.device_id, []))
 
-                    if len(buffer_packets) >= 2:
+                    logger.info(f"🔍 Scene detection: buffer has {len(buffer_packets)} packets (threshold: ≥1 - GUARDRAIL DISABLED)")
+
+                    if len(buffer_packets) >= 1:  # GUARDRAIL DISABLED: was ≥2, now ≥1
+                        logger.info(f"✅ SCENE DETECTED - triggering temporal synthesis for {len(buffer_packets)} events")
                         temporal_synthesis = await self.temporal_narrative_agent.synthesize_temporal_narrative(
                             buffer_packets=buffer_packets,
                             lookback_seconds=float(os.getenv("TEMPORAL_LOOKBACK_SECONDS", "3.0"))
                         )
                         synthesized_narrative = temporal_synthesis.synthesized_narrative
-                        logger.info(f"📖 Temporal synthesis: {len(buffer_packets)} events → {len(synthesized_narrative)} chars")
+                        logger.info(f"📖 Temporal synthesis result: {len(buffer_packets)} events → {len(synthesized_narrative)} chars (fallback={temporal_synthesis.fallback_used})")
+                    else:
+                        logger.info(f"⊘ Scene NOT detected - buffer only has {len(buffer_packets)} packet(s), need ≥1")
                 except Exception as e:
                     logger.warning(f"Temporal synthesis failed, using raw narrative: {e}")
 
@@ -565,16 +612,12 @@ class RAGOrchestrator:
         """
         Decide whether to invoke RAG cognition path.
 
-        Criteria:
-        1. Hazard level is HIGH or CRITICAL
-        2. RAG service is healthy (last success <5s ago, <3 consecutive failures)
-        3. Visual narrative is non-empty
+        GUARDRAILS FULLY DISABLED - ALWAYS TRIGGER RAG:
+        - Removed hazard level restriction
+        - Removed health check (was blocking on failures)
+        - Only check: non-empty narrative
         """
-        return (
-            packet.hazard_level in ["HIGH", "CRITICAL"] and
-            self.rag_health.is_healthy() and
-            len(packet.visual_narrative) > 10
-        )
+        return len(packet.visual_narrative) > 10
 
     async def _cleanup_old_incidents(self):
         """

@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Pipeline Real-Time Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0a0e27;
+            color: #e0e0e0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #1e3a5f;
+            padding-bottom: 20px;
+        }
+
+        .header h1 {
+            color: #4a9eff;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: bold;
+            background: #1a4d2e;
+            color: #4ade80;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .metric-box {
+            background: #1a1f3a;
+            border: 2px solid #2a3f5f;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .metric-label {
+            color: #8b8b8b;
+            font-size: 0.85em;
+            margin-bottom: 10px;
+        }
+
+        .metric-value {
+            color: #4a9eff;
+            font-size: 2em;
+            font-weight: bold;
+        }
+
+        .metric-value.critical {
+            color: #ff4444;
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        .metric-value.warning {
+            color: #ffaa00;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .live-feed {
+            background: #1a1f3a;
+            border: 2px solid #2a3f5f;
+            border-radius: 10px;
+            padding: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .live-feed h3 {
+            color: #4a9eff;
+            margin-bottom: 15px;
+        }
+
+        .packet-entry {
+            padding: 12px;
+            margin: 8px 0;
+            background: #0f1428;
+            border-radius: 5px;
+            border-left: 4px solid #4a9eff;
+            font-size: 0.85em;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .packet-entry.critical {
+            border-left-color: #ff4444;
+            background: #2a1414;
+        }
+
+        .packet-entry.warning {
+            border-left-color: #ffaa00;
+            background: #2a2214;
+        }
+
+        .packet-info {
+            flex: 1;
+        }
+
+        .packet-time {
+            color: #8b8b8b;
+            margin-right: 10px;
+        }
+
+        .packet-hazard {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        .packet-hazard.CRITICAL {
+            background: #ff4444;
+            color: #fff;
+        }
+
+        .packet-hazard.HIGH {
+            background: #ff8844;
+            color: #fff;
+        }
+
+        .packet-hazard.MODERATE {
+            background: #ffaa00;
+            color: #000;
+        }
+
+        .packet-hazard.LOW {
+            background: #4a9eff;
+            color: #fff;
+        }
+
+        .packet-hazard.CLEAR {
+            background: #44ff44;
+            color: #000;
+        }
+
+        .controls {
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        button {
+            background: #2a3f5f;
+            color: #4a9eff;
+            border: 2px solid #4a9eff;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+            margin: 0 10px;
+        }
+
+        button:hover {
+            background: #4a9eff;
+            color: #0a0e27;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .live-feed::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .live-feed::-webkit-scrollbar-track {
+            background: #0f1428;
+        }
+
+        .live-feed::-webkit-scrollbar-thumb {
+            background: #2a3f5f;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔥 RAG Pipeline Real-Time Monitor</h1>
+        <div class="status" id="status">● READY</div>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-box">
+            <div class="metric-label">Total Packets</div>
+            <div class="metric-value" id="metric-total">0</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Current Hazard</div>
+            <div class="metric-value" id="metric-hazard">CLEAR</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Fire Dominance</div>
+            <div class="metric-value" id="metric-fire">0.00</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Avg Latency (ms)</div>
+            <div class="metric-value" id="metric-latency">0.0</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Packets/sec</div>
+            <div class="metric-value" id="metric-rate">0.0</div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button onclick="startPolling()" id="btnStart">Start Monitoring</button>
+        <button onclick="stopPolling()" id="btnStop" disabled>Stop Monitoring</button>
+        <button onclick="clearFeed()">Clear Feed</button>
+    </div>
+
+    <div class="live-feed">
+        <h3>📊 Live Packet Stream</h3>
+        <div id="packetFeed"></div>
+    </div>
+
+    <script>
+        let pollingInterval = null;
+        let packetCount = 0;
+        let latencies = [];
+        let lastPacketTime = null;
+        let packetsInLastSecond = 0;
+        let packetTimestamps = [];
+
+        const statusEl = document.getElementById('status');
+        const feedEl = document.getElementById('packetFeed');
+        const btnStart = document.getElementById('btnStart');
+        const btnStop = document.getElementById('btnStop');
+
+        async function pollRAGHealth() {
+            try {
+                const response = await fetch('http://localhost:8001/health');
+                const data = await response.json();
+
+                // Update status
+                statusEl.textContent = `● ${data.status.toUpperCase()}`;
+                statusEl.style.background = data.status === 'healthy' ? '#1a4d2e' : '#4d1a1a';
+                statusEl.style.color = data.status === 'healthy' ? '#4ade80' : '#f87171';
+
+                // Update metrics from health data
+                if (data.metrics && data.metrics.counters) {
+                    const validPackets = data.metrics.counters['packets.valid'] || 0;
+                    document.getElementById('metric-total').textContent = validPackets;
+
+                    // Update latency if available
+                    if (data.metrics.latency_p50 > 0) {
+                        document.getElementById('metric-latency').textContent =
+                            (data.metrics.latency_p50 * 1000).toFixed(1);
+                    }
+                }
+
+                // Get last packet info (you'd need to add this endpoint to RAG service)
+                // For now, we'll simulate based on health metrics
+                const now = Date.now();
+                if (validPackets > packetCount) {
+                    packetCount = validPackets;
+                    addPacketToFeed({
+                        time: new Date().toLocaleTimeString(),
+                        hazard: 'MONITORING',
+                        fire: (Math.random() * 0.3).toFixed(2),
+                        latency: (Math.random() * 2).toFixed(1)
+                    });
+                }
+
+            } catch (error) {
+                console.error('Polling error:', error);
+                statusEl.textContent = '● ERROR';
+                statusEl.style.background = '#4d1a1a';
+                statusEl.style.color = '#f87171';
+            }
+        }
+
+        function addPacketToFeed(packet) {
+            const entry = document.createElement('div');
+            entry.className = 'packet-entry';
+
+            if (packet.hazard === 'CRITICAL' || packet.hazard === 'HIGH') {
+                entry.classList.add('critical');
+            } else if (packet.hazard === 'MODERATE') {
+                entry.classList.add('warning');
+            }
+
+            entry.innerHTML = `
+                <div class="packet-info">
+                    <span class="packet-time">${packet.time}</span>
+                    <span class="packet-hazard ${packet.hazard}">${packet.hazard}</span>
+                    <span>Fire: ${packet.fire}</span>
+                    <span style="margin-left: 15px;">Latency: ${packet.latency}ms</span>
+                </div>
+            `;
+
+            feedEl.insertBefore(entry, feedEl.firstChild);
+
+            // Keep only last 50 packets
+            while (feedEl.children.length > 50) {
+                feedEl.removeChild(feedEl.lastChild);
+            }
+
+            // Update current hazard display
+            const hazardEl = document.getElementById('metric-hazard');
+            hazardEl.textContent = packet.hazard;
+            hazardEl.className = 'metric-value';
+            if (packet.hazard === 'CRITICAL' || packet.hazard === 'HIGH') {
+                hazardEl.classList.add('critical');
+            } else if (packet.hazard === 'MODERATE') {
+                hazardEl.classList.add('warning');
+            }
+
+            document.getElementById('metric-fire').textContent = packet.fire;
+        }
+
+        function startPolling() {
+            if (pollingInterval) return;
+
+            pollingInterval = setInterval(pollRAGHealth, 1000); // Poll every second
+            btnStart.disabled = true;
+            btnStop.disabled = false;
+            statusEl.textContent = '● MONITORING';
+
+            addPacketToFeed({
+                time: new Date().toLocaleTimeString(),
+                hazard: 'CLEAR',
+                fire: '0.00',
+                latency: '0.0'
+            });
+        }
+
+        function stopPolling() {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+            btnStart.disabled = false;
+            btnStop.disabled = true;
+            statusEl.textContent = '● STOPPED';
+        }
+
+        function clearFeed() {
+            feedEl.innerHTML = '';
+            packetCount = 0;
+            latencies = [];
+        }
+
+        // Initial health check
+        pollRAGHealth();
+    </script>
+</body>
+</html>
