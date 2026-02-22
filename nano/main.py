@@ -5,8 +5,6 @@ import busio
 import cv2
 import numpy as np
 import adafruit_mlx90640
-import bme680
-from smbus2 import SMBus
 from ultralytics import YOLO
 from flask import Flask, Response, jsonify, request
 from reflex_engine import ReflexEngine
@@ -30,29 +28,11 @@ try:
     mlx = adafruit_mlx90640.MLX90640(i2c)
     mlx.refresh_rate = adafruit_mlx90640.RefreshRate.REFRESH_8_HZ
 
-    # Gas Sensor (BME680) — native driver on bus 7
-    bme = bme680.BME680(bme680.I2C_ADDR_SECONDARY, i2c_device=SMBus(7))
-    bme.set_humidity_oversample(bme680.OS_2X)
-    bme.set_pressure_oversample(bme680.OS_4X)
-    bme.set_temperature_oversample(bme680.OS_8X)
-    bme.set_filter(bme680.FILTER_SIZE_3)
-    bme.set_gas_status(bme680.ENABLE_GAS_MEAS)
-    bme.set_gas_heater_temperature(320)
-    bme.set_gas_heater_duration(150)
-    # Calibrate baseline (wait for heater to stabilise)
-    print("Calibrating Gas Sensor...")
-    gas_baseline = None
-    while gas_baseline is None:
-        if bme.get_sensor_data() and bme.data.heat_stable:
-            gas_baseline = bme.data.gas_resistance
-    print(f"Baseline Resistance: {gas_baseline} Ohms")
 
 except Exception as e:
     print(f"⚠️ HARDWARE ERROR: {e}")
     print("Running in EMULATION mode (No real sensors)")
     mlx = None
-    bme = None
-    gas_baseline = None
 
 # --- BACKGROUND THERMAL READER ---
 # mlx.getFrame() blocks until the sensor produces a new frame (~125ms at 8Hz).
@@ -76,27 +56,8 @@ if mlx:
     t = threading.Thread(target=_thermal_reader, daemon=True)
     t.start()
 
-# --- BACKGROUND BME680 READER ---
-_is_smoke = False
-_smoke_lock = threading.Lock()
-
-def _bme_reader():
-    global _is_smoke
-    while True:
-        try:
-            if bme.get_sensor_data() and bme.data.heat_stable:
-                val = (bme.data.gas_resistance / gas_baseline) < 0.8
-                with _smoke_lock:
-                    _is_smoke = val
-        except Exception:
-            pass
-
-if bme:
-    t = threading.Thread(target=_bme_reader, daemon=True)
-    t.start()
-
 # --- SHARED SENSOR STATE (read by /sensor_data endpoint) ---
-_sensor_state = {"max_temp": 25.0, "is_smoke": False, "hazard_level": "CLEAR"}
+_sensor_state = {"max_temp": 25.0, "hazard_level": "CLEAR"}
 _sensor_state_lock = threading.Lock()
 
 # --- AI ENGINES ---
@@ -126,19 +87,16 @@ def generate_frames():
         # 1. READ SENSORS (non-blocking — background threads own the hardware)
         with _thermal_lock:
             max_temp = _thermal_max
-        with _smoke_lock:
-            is_smoke = _is_smoke
 
         # 2. RUN VISION
         results = model.track(frame, persist=True, tracker="botsort.yaml", verbose=False)
 
         # 3. RUN REFLEX LOGIC (Sends Data to Laptop)
-        reflex.process_frame(frame.shape, results, max_temp, is_smoke)
+        reflex.process_frame(frame.shape, results, max_temp)
 
         # 4. UPDATE SHARED SENSOR STATE (served to browser via /sensor_data)
         with _sensor_state_lock:
             _sensor_state["max_temp"] = round(max_temp, 1)
-            _sensor_state["is_smoke"] = is_smoke
             _sensor_state["hazard_level"] = reflex.last_sent_state.get("hazard_level", "CLEAR")
 
         # 5. DRAW OVERLAYS
@@ -220,7 +178,6 @@ def index():
     #hazard.MODERATE { color: #ff9800; }
     #hazard.HIGH     { color: #f44336; }
     #hazard.CRITICAL { color: #f44336; animation: blink 0.5s step-start infinite; }
-    #smoke.active    { color: #f44336; }
     @keyframes blink { 50% { opacity: 0; } }
     #upload-panel {
       display: flex; gap: 12px; padding: 10px 16px;
@@ -248,10 +205,6 @@ def index():
     <div class="sensor-item">
       <span class="label">Thermal Max</span>
       <span class="value" id="temp">--</span>
-    </div>
-    <div class="sensor-item">
-      <span class="label">Smoke</span>
-      <span class="value" id="smoke">--</span>
     </div>
     <div class="sensor-item">
       <span class="label">Hazard Level</span>
@@ -291,10 +244,6 @@ def index():
         .then(r => r.json())
         .then(d => {
           document.getElementById('temp').textContent = d.max_temp + ' °C';
-
-          const smoke = document.getElementById('smoke');
-          smoke.textContent = d.is_smoke ? 'DETECTED' : 'Clear';
-          smoke.className = d.is_smoke ? 'value active' : 'value';
 
           const hazard = document.getElementById('hazard');
           hazard.textContent = d.hazard_level;

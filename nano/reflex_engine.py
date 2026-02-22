@@ -8,7 +8,6 @@ from spatial_heuristics import compute_scene_heuristics
 _HAZARD_MAP = {
     "SAFE":               "CLEAR",
     "FALSE_ALARM_VISUAL": "LOW",
-    "SMOKE_DANGER":       "MODERATE",
     "HIDDEN_HEAT_SOURCE": "HIGH",
     "CRITICAL_CONFIRMED": "HIGH",   # escalates to CRITICAL when temp >= TEMP_CRIT
 }
@@ -33,7 +32,7 @@ class ReflexEngine:
     # Public API
     # ------------------------------------------------------------------
 
-    def process_frame(self, frame_shape, yolov8_results, thermal_max_c, smoke_detected):
+    def process_frame(self, frame_shape, yolov8_results, thermal_max_c):
         now = time.time()
         h, w = frame_shape[:2]
         frame_area = h * w
@@ -95,8 +94,6 @@ class ReflexEngine:
             internal = "HIDDEN_HEAT_SOURCE"
         elif is_visual_fire:
             internal = "FALSE_ALARM_VISUAL"
-        elif smoke_detected:
-            internal = "SMOKE_DANGER"
         else:
             internal = "SAFE"
 
@@ -110,15 +107,13 @@ class ReflexEngine:
             "hazard_level": hazard_level,
             "scores": {
                 "fire_dominance":  round(fire_dominance, 4),
-                "smoke_opacity":   1.0 if smoke_detected else 0.0,
                 "proximity_alert": proximity_alert,
                 "proximity":       spatial_scores["proximity"],
                 "obstruction":     spatial_scores["obstruction"],
                 "dominance":       spatial_scores["dominance"],
             },
             "sensor": {
-                "thermal_max_c":  round(thermal_max_c, 2),
-                "smoke_detected": smoke_detected,
+                "thermal_max_c": round(thermal_max_c, 2),
             },
             "tracked_objects":  tracked_objects,
             "visual_narrative": visual_narrative,
@@ -222,9 +217,6 @@ class ReflexEngine:
 
         last_temp = last.get("sensor", {}).get("thermal_max_c", 0.0)
         if abs(current["sensor"]["thermal_max_c"] - last_temp) > 2.0:
-            return True
-
-        if current["sensor"]["smoke_detected"] != last.get("sensor", {}).get("smoke_detected"):
             return True
 
         if (time.time() - self.last_sent_time) > 2.0:
