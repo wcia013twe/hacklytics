@@ -12,7 +12,7 @@ Usage:
 import zmq
 import json
 
-PORT = 5555
+PORT = 6666
 
 ctx = zmq.Context()
 sock = ctx.socket(zmq.SUB)

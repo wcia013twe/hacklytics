@@ -27,6 +27,20 @@ services:
           cpus: '0.5'
           memory: 512M
 
+  # Redis - Layer 1 & 2 caching
+  redis:
+    image: redis:7-alpine
+    container_name: hacklytics_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - rag_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
   # Auto-seeder for VectorAI DB
   vectoraidb-init:
     build:
@@ -43,6 +57,7 @@ services:
       - rag_network
     volumes:
       - ./scripts:/app/scripts
+      - ./data:/app/data
       - model_cache:/root/.cache/torch
     command: >
       bash -c "echo 'Waiting for Actian...' && 
@@ -64,6 +79,7 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
       BATCH_FLUSH_INTERVAL: ${BATCH_FLUSH_INTERVAL:-2.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REDIS_URL: redis://redis:6379
       OLLAMA_URL: http://host.docker.internal:11434
     depends_on:
       vectoraidb:
@@ -109,6 +125,7 @@ services:
       WEBSOCKET_PORT: ${WEBSOCKET_PORT:-8000}
       BUFFER_WINDOW_SECONDS: ${BUFFER_WINDOW_SECONDS:-10.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REDIS_URL: redis://redis:6379
       OLLAMA_URL: http://host.docker.internal:11434
     depends_on:
       rag:

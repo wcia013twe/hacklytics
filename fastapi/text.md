@@ -1,0 +1,69 @@
+# ============================================================
+# Temporal RAG Backend - Environment Configuration
+# ============================================================
+# INSTRUCTIONS:
+# 1. Copy this file: cp .env.example .env
+# 2. DO NOT commit .env to version control (.gitignore already includes it)
+# 3. See DOCKER_SETUP.md for detailed configuration guide
+# ============================================================
+
+# ============================================================
+# Actian VectorAI DB Configuration (gRPC)
+# ============================================================
+ACTIAN_HOST=vectoraidb
+ACTIAN_PORT=50051
+
+# ============================================================
+# RAG Service Configuration
+# ============================================================
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+BATCH_FLUSH_INTERVAL=2.0  # Seconds between incident_log batch writes
+SCENARIO_CACHE_SIZE=20    # Number of pre-computed scenario embeddings to cache
+RAG_SERVICE_PORT=8001
+
+# ============================================================
+# Ingest Service Configuration
+# ============================================================
+ZMQ_BIND_ADDRESS=tcp://*:5555
+BUFFER_WINDOW_SECONDS=10.0  # Temporal buffer sliding window size
+INGEST_SERVICE_PORT=8000
+RAG_SERVICE_URL=http://rag:8001
+
+# ============================================================
+# Timestamp Validation
+# ============================================================
+# Maximum age (in seconds) for incoming telemetry packets
+# Packets older than this will be rejected to prevent stale data processing
+# Default: 300 seconds (5 minutes)
+# Increase if you have:
+# - Intermittent network connectivity from Jetson devices
+# - Batch upload scenarios where devices buffer data
+# - High network latency environments
+TIMESTAMP_TOLERANCE_SECONDS=300
+
+# ============================================================
+# Logging & Monitoring
+# ============================================================
+LOG_LEVEL=INFO  # DEBUG | INFO | WARNING | ERROR | CRITICAL
+
+# ============================================================
+# WebSocket Configuration (Dashboard)
+# ============================================================
+WEBSOCKET_PORT=8000
+WEBSOCKET_MAX_CONNECTIONS=10
+
+# ============================================================
+# Performance Tuning
+# ============================================================
+# Actian Vector Index Parameters
+PROTOCOL_INDEX_LISTS=50   # IVFFlat index lists for safety_protocols
+INCIDENT_INDEX_LISTS=100  # IVFFlat index lists for incident_log
+
+# Query Limits
+MAX_PROTOCOLS_RETURNED=3  # Top-K protocols per retrieval
+MAX_HISTORY_RETURNED=5    # Top-K session history entries
+
+# Similarity Thresholds
+HISTORY_SIMILARITY_THRESHOLD=0.70  # Minimum cosine similarity for session history retrieval
+
+GEMINI_API_KEY=

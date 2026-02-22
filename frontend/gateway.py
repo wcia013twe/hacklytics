@@ -1,5 +1,5 @@
 """
-Hacklytics Gateway — port 8000
+Hacklytics Gateway — port 8080
 
 Thin relay between the Jetson stream and the dashboard.
 All interpretation (hazard classification, protocol lookup, source document)
@@ -38,6 +38,7 @@ app.add_middleware(
 
 BACKEND_URL     = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 BACKEND_WS_URL  = os.getenv("BACKEND_WS_URL", "ws://127.0.0.1:8000")
+JETSON_WS_URL   = os.getenv("JETSON_WS_URL", "ws://100.116.21.87:5000")
 SESSION_ID      = os.getenv("SESSION_ID", "mission_2026_02_21")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,11 +101,40 @@ connected_clients: Set[WebSocket] = set()
 sim_running   = False
 sim_task: Optional[asyncio.Task]    = None
 relay_task: Optional[asyncio.Task]  = None
+jetson_relay_task: Optional[asyncio.Task] = None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hazard hold-high state  (prevents 'nominal' from instantly overwriting danger)
+# ─────────────────────────────────────────────────────────────────────────────
+HOLD_HIGH_SECONDS = 10
+_SEVERITY_RANK = {"nominal": 0, "warning": 1, "critical": 2}
+_held_payload: Optional[dict] = None   # the last non-nominal payload
+_held_until:  float = 0.0              # time.time() when hold expires
 
 
 async def broadcast(payload: dict):
+    """Send payload to all dashboard clients, applying hold-high filtering."""
+    global _held_payload, _held_until
+
+    status = payload.get("system_status", "nominal")
+    now    = time.time()
+
+    if status != "nominal":
+        # New danger → hold it
+        _held_payload = payload
+        _held_until   = now + HOLD_HIGH_SECONDS
+        outgoing = payload
+    elif now < _held_until and _held_payload:
+        # Inside cooldown — keep showing the danger payload
+        # but update the timestamp so the latency counter stays fresh
+        outgoing = {**_held_payload, "timestamp": payload.get("timestamp", now)}
+    else:
+        # Cooldown expired or never set → allow nominal through
+        _held_payload = None
+        outgoing = payload
+
     dead = set()
-    msg  = json.dumps(payload)
+    msg  = json.dumps(outgoing)
     for ws in connected_clients:
         try:
             await ws.send_text(msg)
@@ -138,8 +168,63 @@ async def _relay_from_backend():
 
 @app.on_event("startup")
 async def startup():
-    global relay_task
+    global relay_task, jetson_relay_task
     relay_task = asyncio.create_task(_relay_from_backend())
+    # Try multiple relay strategies for Jetson
+    jetson_relay_task = asyncio.create_task(_relay_from_jetson_polling())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Jetson polling relay  (sensor data → local RAG pipeline)
+# ─────────────────────────────────────────────────────────────────────────────
+async def _relay_from_jetson_polling():
+    """Poll Jetson REST API and forward to local RAG pipeline."""
+    print(f"[jetson-polling] starting polling from http://100.116.21.87:5000/sensor_data")
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                resp = await client.get("http://100.116.21.87:5000/sensor_data", timeout=2.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    hazard   = data.get("hazard_level", "CLEAR")
+                    max_temp = data.get("max_temp", 25.0)
+                    is_smoke = data.get("is_smoke", False)
+                    now      = time.time()
+
+                    fire_dom = max(0.0, min((max_temp - 25) / 100, 1.0))
+
+                    # Rich narrative for LLM context
+                    parts = [f"Thermal: {max_temp:.1f}°C"]
+                    if is_smoke:
+                        parts.append("Smoke DETECTED")
+                    parts.append(f"Hazard: {hazard}")
+                    narrative = " | ".join(parts)
+
+                    packet = {
+                        "device_id": "jetson_alpha_01",
+                        "session_id": SESSION_ID,
+                        "timestamp": now,
+                        "hazard_level": hazard,
+                        "scores": {
+                            "fire_dominance": round(fire_dom, 4),
+                            "smoke_opacity": 1.0 if is_smoke else 0.0,
+                            "proximity_alert": False,
+                        },
+                        "sensor": {
+                            "thermal_max_c": max_temp,
+                            "smoke_detected": is_smoke,
+                        },
+                        "tracked_objects": [],
+                        "visual_narrative": narrative,
+                    }
+                    try:
+                        await client.post(f"{BACKEND_URL}/test/inject", json=packet, timeout=2.0)
+                    except Exception:
+                        pass
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"[jetson-polling] error: {e}")
+                await asyncio.sleep(5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -222,4 +307,4 @@ async def ws_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     print(f"Gateway  → http://127.0.0.1:8080  (relaying from backend {BACKEND_URL})")
-    uvicorn.run(app, host="127.0.0.1", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=8080)

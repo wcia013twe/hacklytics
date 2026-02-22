@@ -27,7 +27,7 @@ class ProtocolFormatterAgent:
         self,
         model_name: str = OLLAMA_DEFAULT_MODEL,
         ollama_url: str = OLLAMA_DEFAULT_URL,
-        timeout_seconds: float = 1.5,
+        timeout_seconds: float = 10.0,
     ):
         self.model_name = model_name
         self.ollama_url = ollama_url.rstrip("/")
@@ -66,16 +66,20 @@ class ProtocolFormatterAgent:
                     protocol.source
                 )
                 formatted_response = await self._call_ollama(prompt)
+                logger.info(f"Ollama raw response: {formatted_response[:500]}...")
                 
                 try:
                     # Clean up response (sometimes Ollama wraps json in markdown block randomly)
                     if formatted_response.startswith('```json'):
                         formatted_response = formatted_response[7:]
-                        if formatted_response.endswith('```'):
-                            formatted_response = formatted_response[:-3]
                     elif formatted_response.startswith('```'):
                         formatted_response = formatted_response[3:]
+                    
+                    if formatted_response.endswith('```'):
+                        formatted_response = formatted_response[:-3]
+                    
                     formatted_response = formatted_response.strip()
+                    logger.debug(f"Ollama cleaned response: {formatted_response}")
 
                     parsed = json.loads(formatted_response)
                     
@@ -113,7 +117,7 @@ class ProtocolFormatterAgent:
             except Exception as e:
                 logger.error(f"Ollama error in ProtocolFormatterAgent: {e} — using fallback")
                 self.metrics["api_errors"] += 1
-                self.api_available = False
+                # Don't permanently disable — Ollama may recover on the next packet
 
         # Fallback
         return self._fallback_formatter(protocol, synthesized_narrative, start_time)
@@ -162,7 +166,7 @@ Output JSON only:
             "stream": False,
             "options": {
                 "temperature": 0.1,  # Lower temperature for formatting
-                "num_predict": 200,   # Increase for JSON payload output
+                "num_predict": 500,   # Enough headroom for full JSON payload
                 "top_p": 0.8,
             }
         }
@@ -188,13 +192,19 @@ Output JSON only:
         self.metrics["fallback_used"] += 1
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         
+        # Define generic fallback commands based on hazard level if possible
+        fallback_commands = [
+            ActionCommand(target="Incident Commander", directive="Review ERG Guide " + protocol.source),
+            ActionCommand(target="First Responders", directive="Establish isolation zone per " + protocol.category)
+        ]
+
         # action_command will be populated from Synthesis recommendation in orchestrator
         return FormatterResult(
             action_command="Follow standard procedures",  # Overwritten in orchestrator
             action_reason=synthesized_narrative[:250],
             hazard_type=protocol.category,
             source_text=protocol.protocol_text[:300],
-            actionable_commands=[],
+            actionable_commands=fallback_commands,
             fallback_used=True
         )
 

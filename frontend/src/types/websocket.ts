@@ -5,12 +5,21 @@ export interface ActionCommand {
     directive: string;
 }
 
+export interface SessionHistoryEntry {
+    narrative: string;
+    hazard_level: string;
+    timestamp: number;
+}
+
 export interface RagData {
     protocol_id: string;
     hazard_type: string;
     source_text: string;
     source_document?: string;
     actionable_commands?: ActionCommand[];
+    similarity_score?: number;
+    session_history?: SessionHistoryEntry[];
+    temporal_synthesis?: string;
 }
 
 export interface Entity {

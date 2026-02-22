@@ -75,9 +75,9 @@ async def zmq_listener():
     ctx = zmq.asyncio.Context()
     socket = ctx.socket(zmq.SUB)
 
-    # TODO: Get from env var
-    zmq_endpoint = "tcp://localhost:5555"  # Jetson publishes here
-    socket.connect(zmq_endpoint)
+    # The Jetson connects to us (backend). We bind.
+    zmq_endpoint = os.getenv("ZMQ_BIND_ADDRESS", "tcp://*:5555")
+    socket.bind(zmq_endpoint)
     socket.subscribe(b"")  # Subscribe to all topics
 
     logger.info(f"ZMQ listener connected to {zmq_endpoint}")

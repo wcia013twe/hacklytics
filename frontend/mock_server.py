@@ -177,7 +177,10 @@ def transform_to_payload(jetson: dict) -> dict:
         "system_status": STATUS_MAP[hazard],
         "action_command": COMMAND_MAP[hazard],
         "action_reason": jetson["visual_narrative"],
-        "rag_data": MOCK_PROTOCOLS[hazard],
+        "rag_data": {
+            **MOCK_PROTOCOLS[hazard],
+            "actionable_commands": MOCK_PROTOCOLS[hazard].get("actionable_commands", [])
+        },
         "scene_context": {
             "entities": entities,
             "telemetry": {"temp_f": temp_f, "trend": temp_trend},

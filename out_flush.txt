@@ -1,0 +1,2 @@
+Pre-restart count: 1
+Flushed!

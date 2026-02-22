@@ -1,4 +1,4 @@
-import { Activity, Camera, HeartPulse, Thermometer, Wind, X } from 'lucide-react';
+import { Camera, HeartPulse, Thermometer, Wind, X } from 'lucide-react';
 import type { Responder } from '../types/websocket';
 
 interface ResponderDetailViewProps {
@@ -48,23 +48,30 @@ export function ResponderDetailView({ responder, onClose }: ResponderDetailViewP
                     <div className="absolute top-2 left-2 z-20 bg-black/80 border border-slate-700 px-3 py-1 text-[10px] font-mono text-slate-200 flex items-center tracking-widest uppercase">
                         <Camera className="w-3 h-3 mr-2" /> BODY CAM REC // LIVE
                     </div>
-                    {/* Mock Video Placeholder */}
-                    <div className="flex-1 w-full bg-slate-900 flex items-center justify-center relative overflow-hidden">
+                    {/* Live Video Feed */}
+                    <div className="flex-1 w-full bg-black relative overflow-hidden">
                         {/* Scanlines */}
-                        <div className="absolute inset-0 opacity-20 mix-blend-overlay pointer-events-none" style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 2px, #000 2px, #000 4px)' }}></div>
+                        <div className="absolute inset-0 opacity-10 mix-blend-overlay pointer-events-none z-10" style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 2px, #000 2px, #000 4px)' }}></div>
 
-                        <Activity className="w-32 h-32 text-slate-800 absolute opacity-20 animate-pulse" />
+                        <img
+                            src={responder.body_cam_url}
+                            alt={`${responder.name} Live Feed`}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                        />
 
                         {/* Crosshair Overlay */}
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
                             <div className="w-16 h-16 border border-slate-600/30 rounded-full flex items-center justify-center relative">
                                 <div className="absolute w-full h-[1px] bg-slate-600/30" />
                                 <div className="absolute h-full w-[1px] bg-slate-600/30" />
                             </div>
                         </div>
 
-                        <span className="absolute bottom-4 right-4 text-slate-500 font-mono text-[10px] tracking-[0.3em] uppercase bg-black/50 px-2 py-1 border border-slate-800">
-                            ENCRYPTED STREAM ACT-1
+                        <span className="absolute bottom-4 right-4 text-slate-500 font-mono text-[10px] tracking-[0.3em] uppercase bg-black/50 px-2 py-1 border border-slate-800 z-10">
+                            LIVE STREAM — {responder.name}
                         </span>
                     </div>
                 </div>

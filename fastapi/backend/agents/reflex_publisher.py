@@ -55,7 +55,18 @@ class ReflexPublisherAgent:
                     "temp_f": temp_f,
                     "trend": "rising" if packet.scores.fire_dominance > 0.1 else "stable",
                 },
-                "responders": [],
+                "responders": [{
+                    "id": packet.device_id,
+                    "name": "RESCUE-1",
+                    "status": _STATUS_MAP[packet.hazard_level],
+                    "vitals": {
+                        "heart_rate": 0,
+                        "o2_level": 0,
+                        "aqi": round(packet.scores.smoke_opacity * 500),
+                    },
+                    "body_cam_url": "http://100.116.21.87:5000/video_feed",
+                    "thermal_cam_url": "http://100.116.21.87:5000/video_feed",
+                }],
                 "synthesized_insights": {
                     "threat_vector": packet.visual_narrative,
                     "evacuation_radius_ft": None,

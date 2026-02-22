@@ -452,16 +452,25 @@ class RAGOrchestrator:
             # Build WebSocketPayload so the frontend receives a consistent format
             # from both the reflex path and the RAG cognition path.
             primary_protocol = protocols[0] if protocols else None
+            if primary_protocol:
+                logger.info(f"🔎 [COGNITION] Selected primary protocol: {primary_protocol.source} (score={primary_protocol.similarity_score:.4f})")
+            else:
+                logger.warning("⚠️ [COGNITION] No protocols found for synthesis.")
+
             temp_f = round(72 + packet.scores.fire_dominance * 428)
             from .agents.reflex_publisher import _STATUS_MAP, _TREND_MAP
             
             formatter_result = None
             if primary_protocol and self.protocol_formatter:
+                logger.info(f"🤖 [COGNITION] Invoking protocol formatter for {primary_protocol.source}...")
                 formatter_result = await self.protocol_formatter.format(
                     protocol=primary_protocol,
                     packet=packet,
                     synthesized_narrative=synthesized_narrative,
                 )
+            
+            if formatter_result:
+                 logger.info(f"📝 [COGNITION] Formatter finished. Fallback used: {formatter_result.fallback_used}, Commands count: {len(formatter_result.actionable_commands)}")
 
             if formatter_result and not formatter_result.fallback_used:
                 rag_message = {
@@ -474,7 +483,17 @@ class RAGOrchestrator:
                         "hazard_type": formatter_result.hazard_type,
                         "source_document": primary_protocol.source,
                         "source_text": formatter_result.source_text,
-                        "actionable_commands": [cmd.dict() for cmd in formatter_result.actionable_commands]
+                        "actionable_commands": [cmd.dict() for cmd in formatter_result.actionable_commands],
+                        "similarity_score": round(primary_protocol.similarity_score, 4) if primary_protocol else None,
+                        "session_history": [
+                            {
+                                "narrative": h.get("narrative", "")[:120] if isinstance(h, dict) else str(h)[:120],
+                                "hazard_level": h.get("hazard_level", "?") if isinstance(h, dict) else "?",
+                                "timestamp": h.get("timestamp", 0) if isinstance(h, dict) else 0,
+                            }
+                            for h in (history or [])[:5]
+                        ],
+                        "temporal_synthesis": synthesized_narrative[:300],
                     },
                     "scene_context": {
                         "entities": [
@@ -489,7 +508,18 @@ class RAGOrchestrator:
                             "temp_f": temp_f,
                             "trend": "rising" if packet.scores.fire_dominance > 0.1 else "stable",
                         },
-                        "responders": [],
+                        "responders": [{
+                            "id": packet.device_id,
+                            "name": "RESCUE-1",
+                            "status": _STATUS_MAP[packet.hazard_level],
+                            "vitals": {
+                                "heart_rate": 0,
+                                "o2_level": 0,
+                                "aqi": round(packet.scores.smoke_opacity * 500),
+                            },
+                            "body_cam_url": "http://100.116.21.87:5000/video_feed",
+                            "thermal_cam_url": "http://100.116.21.87:5000/video_feed",
+                        }],
                         "synthesized_insights": {
                             "threat_vector": synthesized_narrative,
                             "evacuation_radius_ft": 100 if packet.hazard_level == "CRITICAL" else (50 if packet.hazard_level == "HIGH" else None),
@@ -508,10 +538,19 @@ class RAGOrchestrator:
                     "rag_data": {
                         "protocol_id": primary_protocol.source if primary_protocol else "fallback",
                         "hazard_type": primary_protocol.category if primary_protocol else packet.hazard_level,
-                        # source_document is the actual filename/reference stored in Actian
                         "source_document": primary_protocol.source if primary_protocol else None,
                         "source_text": primary_protocol.protocol_text if primary_protocol else recommendation.recommendation,
                         "actionable_commands": [],
+                        "similarity_score": round(primary_protocol.similarity_score, 4) if primary_protocol else None,
+                        "session_history": [
+                            {
+                                "narrative": h.get("narrative", "")[:120] if isinstance(h, dict) else str(h)[:120],
+                                "hazard_level": h.get("hazard_level", "?") if isinstance(h, dict) else "?",
+                                "timestamp": h.get("timestamp", 0) if isinstance(h, dict) else 0,
+                            }
+                            for h in (history or [])[:5]
+                        ],
+                        "temporal_synthesis": synthesized_narrative[:300],
                     } if primary_protocol or recommendation else None,
                     "scene_context": {
                         "entities": [
@@ -526,7 +565,18 @@ class RAGOrchestrator:
                             "temp_f": temp_f,
                             "trend": "rising" if packet.scores.fire_dominance > 0.1 else "stable",
                         },
-                        "responders": [],
+                        "responders": [{
+                            "id": packet.device_id,
+                            "name": "RESCUE-1",
+                            "status": _STATUS_MAP[packet.hazard_level],
+                            "vitals": {
+                                "heart_rate": 0,
+                                "o2_level": 0,
+                                "aqi": round(packet.scores.smoke_opacity * 500),
+                            },
+                            "body_cam_url": "http://100.116.21.87:5000/video_feed",
+                            "thermal_cam_url": "http://100.116.21.87:5000/video_feed",
+                        }],
                         "synthesized_insights": {
                             "threat_vector": synthesized_narrative,
                             "evacuation_radius_ft": 100 if packet.hazard_level == "CRITICAL" else (50 if packet.hazard_level == "HIGH" else None),
@@ -631,7 +681,7 @@ class RAGOrchestrator:
         3. Visual narrative is non-empty
         """
         return (
-            packet.hazard_level in ["HIGH", "CRITICAL"] and
+            packet.hazard_level in ["MODERATE", "HIGH", "CRITICAL"] and
             self.rag_health.is_healthy() and
             len(packet.visual_narrative) > 10
         )
