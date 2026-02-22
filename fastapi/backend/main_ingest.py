@@ -511,6 +511,140 @@ async def test_inject(packet: dict):
     return result
 
 
+@app.get("/api/metrics")
+async def get_api_metrics():
+    """
+    REST API alternative to WebSocket: Get current metrics and state.
+
+    Returns the latest telemetry data for dashboard polling.
+    """
+    if not orchestrator:
+        return {"error": "Orchestrator not initialized"}
+
+    # Get latest buffer state
+    latest_data = {}
+    for device_id, buffer in orchestrator.temporal_buffer.buffers.items():
+        if buffer:
+            latest_packet = buffer[-1]  # Most recent packet
+            latest_data[device_id] = {
+                "timestamp": latest_packet.get("timestamp"),
+                "fire_dominance": latest_packet.get("scores", {}).get("fire_dominance"),
+                "smoke_opacity": latest_packet.get("scores", {}).get("smoke_opacity"),
+                "proximity_alert": latest_packet.get("scores", {}).get("proximity_alert"),
+                "hazard_level": latest_packet.get("hazard_level"),
+                "buffer_size": len(buffer)
+            }
+
+    return {
+        "status": "ok",
+        "metrics": orchestrator.metrics.summary(),
+        "rag_healthy": orchestrator.rag_health.is_healthy(),
+        "latest_data": latest_data
+    }
+
+
+@app.post("/broadcast")
+async def broadcast_message(message: dict):
+    """
+    Relay aggregated intelligence to all dashboard WebSocket clients
+
+    Called by aggregator service when building-wide synthesis is ready.
+    Broadcasts message to all connected dashboard clients via WebSocket.
+
+    Args:
+        message: Aggregation payload (formatted as RAG recommendation)
+
+    Returns:
+        Status confirmation
+    """
+    try:
+        if not orchestrator:
+            return {"status": "error", "error": "Orchestrator not initialized"}
+
+        # Broadcast to all connected WebSocket clients via orchestrator's reflex publisher
+        # Try all registered sessions by iterating through all connected clients
+        total_clients_reached = 0
+        for session_id in orchestrator.reflex_publisher.ws_clients.keys():
+            result = await orchestrator.reflex_publisher.websocket_broadcast(
+                message,
+                session_id=session_id,
+                timeout_ms=50
+            )
+            total_clients_reached += result.get("clients_reached", 0)
+
+        logger.info(f"📡 Broadcast aggregation: {message.get('recommendation', '')[:50]}...")
+
+        return {
+            "status": "broadcast_sent",
+            "message_type": message.get('message_type'),
+            "responder_count": message.get('protocols_count', 0),
+            "clients_reached": total_clients_reached
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Broadcast failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+# ==============================================================================
+# DEMO MODE: API Endpoints
+# ==============================================================================
+
+@app.post("/demo/start")
+async def start_demo():
+    """
+    Start multi-location demo mode
+
+    Spawns asyncio task that broadcasts scripted fake RAG messages over 60 seconds.
+    DOES NOT pollute real pipeline - only sends WebSocket messages.
+
+    Returns:
+        {"status": "started", "duration_sec": 60, "scenarios": 3}
+    """
+    global demo_manager
+
+    if not demo_manager:
+        demo_manager = DemoManager(orchestrator.reflex_publisher)
+
+    result = await demo_manager.start()
+    return result
+
+
+@app.post("/demo/stop")
+async def stop_demo():
+    """
+    Stop demo mode
+
+    Cancels demo asyncio task and stops fake message broadcasts.
+
+    Returns:
+        {"status": "stopped", "elapsed_sec": <seconds_ran>}
+    """
+    global demo_manager
+
+    if not demo_manager:
+        return {"status": "not_running"}
+
+    result = await demo_manager.stop()
+    return result
+
+
+@app.get("/demo/status")
+async def demo_status():
+    """
+    Get demo status
+
+    Returns:
+        {"running": bool, "elapsed_sec": float, "scenarios": int}
+    """
+    global demo_manager
+
+    if not demo_manager:
+        return {"running": False, "scenarios": len(DEMO_SCENARIOS)}
+
+    return demo_manager.get_status()
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
