@@ -10,6 +10,9 @@ python-multipart>=0.0.6
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
+# Document Processing
+pypdf>=4.0.0
+
 # Embedding & ML
 sentence-transformers>=2.2.0
 torch>=2.0.0
