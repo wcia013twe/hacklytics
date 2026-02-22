@@ -15,13 +15,13 @@ services:
     restart: unless-stopped
     stop_grace_period: 2m  # Allow graceful shutdown for data persistence
     healthcheck:
-      # VectorAI DB doesn't have built-in health probe, use simple connection test
-      # Using nc (netcat) which is more reliable than bash TCP redirect in emulated environments
-      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s  # Increased for emulation startup time
+      # VectorAI DB doesn't have built-in health probe, use bash TCP connection test
+      # Using bash TCP redirect (works without nc/netcat in minimal containers)
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/localhost/50051' || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 120s  # Extended for amd64 emulation on Apple Silicon (much slower startup)
     # Resource limits to prevent runaway consumption
     deploy:
       resources:
