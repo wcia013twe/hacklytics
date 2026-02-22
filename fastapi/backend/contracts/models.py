@@ -12,6 +12,21 @@ This ensures consistent temporal reasoning across distributed devices and servic
 """
 
 from pydantic import BaseModel, Field, validator
+from typing import Literal, List, Dict, Optional, Any
+from datetime import datetime
+import os
+
+class ActionCommand(BaseModel):
+    target: str = Field(..., description="Who receives the command ('Rescue Team', 'IC', 'All Units')")
+    directive: str = Field(..., description="What they must do — imperative, specific, ≤12 words")
+
+class FormatterResult(BaseModel):
+    action_command: str = Field(..., description="Single primary directive (≤15 words, imperative)")
+    action_reason: str = Field(..., description="Why — grounds the command in ERG + scene facts (≤25 words)")
+    hazard_type: str = Field(..., description="Hazard classification, e.g. 'Adsorbed Gases - Flammable'")
+    source_text: str = Field(..., description="Key excerpt from the ERG guide (≤3 sentences)")
+    actionable_commands: List[ActionCommand] = Field(..., description="2–4 scene-grounded commands")
+    fallback_used: bool = Field(default=False, description="True if LLM failed and fallback was used")
 from typing import Literal, List, Dict, Optional
 from datetime import datetime
 import os
@@ -21,6 +36,7 @@ class TrackedObject(BaseModel):
     label: str
     status: str
     duration_in_frame: float
+    growth_rate: Optional[float] = None  # Present on fire objects (e.g., 0.1 = 10% growth over 5s)
 
 class Scores(BaseModel):
     fire_dominance: float = Field(..., ge=0.0, le=1.0)

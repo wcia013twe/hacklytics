@@ -3,7 +3,9 @@ version: '3.8'
 services:
   # Actian VectorAI DB - gRPC-based vector storage for protocols and incident history
   vectoraidb:
-    image: williamimoh/actian-vectorai-db:1.0b  # Public image from DockerHub
+    build:
+      context: .
+      dockerfile: Dockerfile.vectoraidb
     platform: linux/amd64   # Required on macOS with Apple Silicon
     container_name: hacklytics_vectoraidb
     ports:
@@ -14,14 +16,7 @@ services:
       - rag_network
     restart: unless-stopped
     stop_grace_period: 2m  # Allow graceful shutdown for data persistence
-    healthcheck:
-      # VectorAI DB doesn't have built-in health probe, use bash TCP connection test
-      # Using bash TCP redirect (works without nc/netcat in minimal containers)
-      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/localhost/50051' || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 120s  # Extended for amd64 emulation on Apple Silicon (much slower startup)
+    # Removed healthcheck because Actian VDE doesn't implement grpc.health.v1.Health
     # Resource limits to prevent runaway consumption
     deploy:
       resources:
@@ -46,9 +41,10 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
       BATCH_FLUSH_INTERVAL: ${BATCH_FLUSH_INTERVAL:-2.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OLLAMA_URL: http://host.docker.internal:11434
     depends_on:
       vectoraidb:
-        condition: service_healthy
+        condition: service_started
     networks:
       - rag_network
     volumes:
@@ -83,11 +79,14 @@ services:
       - "8000:8000"
       - "5555:5555"
     environment:
+      ACTIAN_HOST: vectoraidb
+      ACTIAN_PORT: 50051
       ZMQ_BIND_ADDRESS: ${ZMQ_BIND_ADDRESS:-tcp://*:5555}
       RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://rag:8001}
       WEBSOCKET_PORT: ${WEBSOCKET_PORT:-8000}
       BUFFER_WINDOW_SECONDS: ${BUFFER_WINDOW_SECONDS:-10.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OLLAMA_URL: http://host.docker.internal:11434
     depends_on:
       rag:
         condition: service_healthy
@@ -127,7 +126,7 @@ services:
       PYTHONPATH: /app
     depends_on:
       vectoraidb:
-        condition: service_healthy
+        condition: service_started
     networks:
       - rag_network
     volumes:

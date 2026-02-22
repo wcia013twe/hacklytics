@@ -18,8 +18,8 @@ sentence-transformers>=2.2.0
 torch>=2.0.0
 numpy>=1.24.0
 
-# Temporal LLM (Gemini Flash for narrative synthesis)
-google-generativeai>=0.3.0
+# Temporal LLM (local Ollama — run: ollama pull llama3.2:1b)
+# No extra Python package needed; uses httpx (already listed below)
 
 # Redis Caching (multi-layer cache for RAG pipeline)
 redis>=5.0.0

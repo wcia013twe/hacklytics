@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import useWebSocket, { ReadyState } from 'react-use-websocket';
 import type { AppState, WebSocketPayload } from '../types/websocket';
 
-const SOCKET_URL = 'ws://127.0.0.1:8000/ws';
+const SOCKET_URL = 'ws://127.0.0.1:8080/ws';
 
 export function useDashboardSocket(): AppState {
     const [payload, setPayload] = useState<WebSocketPayload | null>(null);

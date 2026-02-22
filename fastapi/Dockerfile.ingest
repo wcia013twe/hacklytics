@@ -17,7 +17,9 @@ RUN apt-get update && apt-get install -y \
 
 # Copy and install Python dependencies to user site-packages
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+COPY actiancortex-0.1.0b1-py3-none-any.whl .
+RUN pip install --no-cache-dir --user -r requirements.txt && \
+    pip install --no-cache-dir --user actiancortex-0.1.0b1-py3-none-any.whl
 
 # ============================================================
 # Stage 2: Runtime - Minimal production image
